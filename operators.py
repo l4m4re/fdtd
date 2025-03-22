@@ -249,6 +249,236 @@ def scalar_laplacian(scalar_field: np.ndarray, dx: float = 1.0, dy: float = 1.0,
     
     return lap
 
+def helmholtz_decomposition(vx: np.ndarray, vy: np.ndarray, vz: np.ndarray, 
+                           dx: float = 1.0, dy: float = 1.0, dz: float = 1.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Decompose a vector field into irrotational (curl-free) and solenoidal (divergence-free) components.
+    
+    In Space Time Potential Theory, this decomposition is fundamental for:
+    - Separating compressible/irrotational flow (related to first sound and electric field)
+    - Separating incompressible/solenoidal flow (related to vorticity and magnetic field)
+    
+    Parameters
+    ----------
+    vx, vy, vz : np.ndarray
+        Components of the vector field
+    dx, dy, dz : float
+        Grid spacing in each dimension
+        
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        Components of irrotational field (vx_irrot, vy_irrot, vz_irrot) and 
+        solenoidal field (vx_sol, vy_sol, vz_sol)
+    """
+    # Calculate divergence
+    div_v = divergence(vx, vy, vz, dx, dy, dz)
+    
+    # Solve Poisson equation for scalar potential
+    # Using simple Jacobi iteration for demonstration (would use more efficient solver in practice)
+    scalar_potential = np.zeros_like(div_v)
+    for _ in range(100):  # Number of iterations
+        lap_phi = scalar_laplacian(scalar_potential, dx, dy, dz)
+        scalar_potential += 0.1 * (div_v - lap_phi)  # Relaxation factor 0.1
+    
+    # Calculate gradient of scalar potential to get irrotational component
+    vx_irrot, vy_irrot, vz_irrot = gradient(scalar_potential, dx, dy, dz)
+    
+    # Solenoidal component is the difference
+    vx_sol = vx - vx_irrot
+    vy_sol = vy - vy_irrot
+    vz_sol = vz - vz_irrot
+    
+    return vx_irrot, vy_irrot, vz_irrot, vx_sol, vy_sol, vz_sol
+
+def first_sound_step(density_perturbation: np.ndarray, velocity_perturbation: np.ndarray, 
+                    dt: float, dx: float, viscosity: float, background_density: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Perform one time step of the first sound wave equation.
+    
+    Implements the wave equation:
+    ∂²ρ'/∂t² = (η/ρ₀)∇²ρ'
+    
+    Parameters
+    ----------
+    density_perturbation : np.ndarray
+        Current density perturbation field
+    velocity_perturbation : np.ndarray
+        Current time derivative of density perturbation
+    dt : float
+        Time step
+    dx : float
+        Grid spacing
+    viscosity : float
+        Substrate viscosity η
+    background_density : float
+        Background density ρ₀
+        
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        Updated density perturbation and velocity perturbation
+    """
+    # Calculate Laplacian of density perturbation
+    lap_density = scalar_laplacian(density_perturbation, dx, dx, dx)
+    
+    # Wave equation coefficient
+    wave_speed_squared = viscosity / background_density
+    
+    # Update velocity perturbation (∂ρ'/∂t)
+    velocity_perturbation += dt * wave_speed_squared * lap_density
+    
+    # Update density perturbation
+    density_perturbation += dt * velocity_perturbation
+    
+    return density_perturbation, velocity_perturbation
+
+def second_sound_step(temperature_perturbation: np.ndarray, temp_velocity: np.ndarray, temp_acceleration: np.ndarray,
+                     dt: float, dx: float, viscosity: float, density: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Perform one time step of the second sound wave equation.
+    
+    Implements the wave equation:
+    ∂²θ'/∂t² = -(η/ρ)∇²(∂θ'/∂t)
+    
+    Parameters
+    ----------
+    temperature_perturbation : np.ndarray
+        Current temperature perturbation field
+    temp_velocity : np.ndarray
+        Current time derivative of temperature (∂θ'/∂t)
+    temp_acceleration : np.ndarray
+        Current second time derivative of temperature (∂²θ'/∂t²)
+    dt : float
+        Time step
+    dx : float
+        Grid spacing
+    viscosity : float
+        Substrate viscosity η
+    density : float
+        Substrate density ρ
+        
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        Updated temperature perturbation, velocity, and acceleration
+    """
+    # Calculate Laplacian of temperature velocity
+    lap_temp_velocity = scalar_laplacian(temp_velocity, dx, dx, dx)
+    
+    # Wave equation coefficient
+    coefficient = -viscosity / density
+    
+    # Update temperature acceleration (∂²θ'/∂t²)
+    temp_acceleration = coefficient * lap_temp_velocity
+    
+    # Update temperature velocity (∂θ'/∂t)
+    temp_velocity += dt * temp_acceleration
+    
+    # Update temperature perturbation
+    temperature_perturbation += dt * temp_velocity
+    
+    return temperature_perturbation, temp_velocity, temp_acceleration
+
+def quantized_vortex(nx: int, ny: int, nz: int, center: Tuple[int, int, int], 
+                     circulation: float, axis: Tuple[float, float, float] = (0, 0, 1), 
+                     core_radius: int = 3) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Generate a quantized vortex velocity field.
+    
+    In Space Time Potential Theory, particles are represented as quantized vortices.
+    This function creates an idealized vortex with quantized circulation.
+    
+    Parameters
+    ----------
+    nx, ny, nz : int
+        Grid dimensions
+    center : Tuple[int, int, int]
+        Location of vortex center (ix, iy, iz)
+    circulation : float
+        Strength of circulation, typically quantized as h/m
+    axis : Tuple[float, float, float]
+        Direction of vortex axis, will be normalized
+    core_radius : int
+        Radius of vortex core in grid cells
+        
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        Velocity field components (vx, vy, vz) of the vortex
+    """
+    # Initialize velocity field
+    vx = np.zeros((nx, ny, nz))
+    vy = np.zeros((nx, ny, nz))
+    vz = np.zeros((nx, ny, nz))
+    
+    # Normalize axis
+    ax, ay, az = axis
+    norm = np.sqrt(ax**2 + ay**2 + az**2)
+    if norm > 0:
+        ax, ay, az = ax/norm, ay/norm, az/norm
+    else:
+        ax, ay, az = 0, 0, 1  # Default to z-axis
+    
+    # Create coordinate grid
+    x, y, z = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing='ij')
+    
+    # Center coordinates
+    cx, cy, cz = center
+    x = x - cx
+    y = y - cy
+    z = z - cz
+    
+    # Calculate distance from vortex axis
+    # For a z-axis aligned vortex, this is simply sqrt(x² + y²)
+    # For arbitrary axis, we need to find the perpendicular distance to the axis
+    
+    # Project position vector onto axis to find parallel component
+    parallel = (x*ax + y*ay + z*az)
+    
+    # Parallel component vector
+    px = parallel * ax
+    py = parallel * ay
+    pz = parallel * az
+    
+    # Perpendicular component vector
+    rx = x - px
+    ry = y - py
+    rz = z - pz
+    
+    # Distance from axis (perpendicular)
+    r = np.sqrt(rx**2 + ry**2 + rz**2)
+    
+    # Avoid division by zero at center
+    r = np.maximum(r, 0.001)
+    
+    # Azimuthal unit vector (perpendicular to both r and axis)
+    theta_x = ay*rz - az*ry
+    theta_y = az*rx - ax*rz
+    theta_z = ax*ry - ay*rx
+    
+    # Normalize
+    theta_norm = np.sqrt(theta_x**2 + theta_y**2 + theta_z**2)
+    theta_norm = np.maximum(theta_norm, 0.001)  # Avoid division by zero
+    theta_x /= theta_norm
+    theta_y /= theta_norm
+    theta_z /= theta_norm
+    
+    # Apply velocity profile: v = (circulation/(2π*r)) * θ̂ for r > core_radius
+    # and v = (circulation/(2π*core_radius)) * (r/core_radius) * θ̂ for r <= core_radius
+    velocity_magnitude = np.where(
+        r > core_radius,
+        circulation / (2 * np.pi * r),
+        circulation * r / (2 * np.pi * core_radius**2)
+    )
+    
+    # Set velocity components
+    vx = velocity_magnitude * theta_x
+    vy = velocity_magnitude * theta_y
+    vz = velocity_magnitude * theta_z
+    
+    return vx, vy, vz
+
 # PROMPT: Additional operators to consider:
 # 1. Helmholtz decomposition function to separate vector fields into
 #    curl-free and divergence-free components

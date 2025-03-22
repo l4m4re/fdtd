@@ -17,6 +17,8 @@ References:
 import numpy as np
 from typing import Tuple, Optional, Dict, Any
 from .operators import gradient, divergence, curl, vector_laplacian
+from .wave_solvers import FirstSoundSolver, SecondSoundSolver
+from .operators import helmholtz_decomposition, quantized_vortex
 
 # Physical constants
 VISCOSITY = 1/(4*np.pi*1e-7)  # η - dynamic viscosity [Pa·s]
@@ -102,6 +104,14 @@ class AetherGrid:
         # PROMPT: These are computed from the action flux field
         self.electric_field = np.zeros((3, nx, ny, nz))  # E = ∇·C/ε₀ [V/m, N/C]
         self.magnetic_field = np.zeros((3, nx, ny, nz))  # B = μ₀·∇×C [T, Wb/m²]
+        
+        # Add wave solvers
+        self.first_sound_solver = FirstSoundSolver(
+            nx, ny, nz, dx, dt, viscosity, background_density
+        )
+        self.second_sound_solver = SecondSoundSolver(
+            nx, ny, nz, dx, dt, viscosity, background_density
+        )
     
     def update_vorticity(self):
         """
@@ -298,8 +308,13 @@ class AetherGrid:
         self.update_potentials()
         self.update_electromagnetic_fields()
         
-        # PROMPT: Add first and second sound wave propagation equations here
-        # for density and temperature perturbations
+        # Decompose velocity field
+        self.decompose_velocity_field()
+        
+        # Update wave solvers
+        self.update_wave_solvers()
+        
+        # Continue with remaining updates
     
     def add_charge(self, 
                    x: float, 
@@ -391,6 +406,155 @@ class AetherGrid:
                         self.vorticity[0, i, j, k] = intensity * dx
                         self.vorticity[1, i, j, k] = intensity * dy
                         self.vorticity[2, i, j, k] = intensity * dz
+    
+    def decompose_velocity_field(self):
+        """
+        Decompose the velocity field into irrotational and solenoidal components.
+        
+        This is crucial for:
+        - Understanding which components drive electromagnetic vs. gravitational effects
+        - Separating first sound (density waves) from rotational dynamics
+        """
+        vx = self.velocity[0]
+        vy = self.velocity[1]
+        vz = self.velocity[2]
+        
+        vx_irrot, vy_irrot, vz_irrot, vx_sol, vy_sol, vz_sol = helmholtz_decomposition(
+            vx, vy, vz, self.dx, self.dx, self.dx
+        )
+        
+        # Store decomposed fields
+        self.irrotational_velocity = np.array([vx_irrot, vy_irrot, vz_irrot])
+        self.solenoidal_velocity = np.array([vx_sol, vy_sol, vz_sol])
+        
+        # Update density perturbation based on divergence of irrotational component
+        div_irrot = divergence(vx_irrot, vy_irrot, vz_irrot, self.dx, self.dx, self.dx)
+        self.first_sound_solver.density_perturbation = div_irrot
+        
+        # Update vorticity based on curl of solenoidal component
+        wx, wy, wz = curl(vx_sol, vy_sol, vz_sol, self.dx, self.dx, self.dx)
+        self.vorticity[0] = wx
+        self.vorticity[1] = wy
+        self.vorticity[2] = wz
+    
+    def update_wave_solvers(self):
+        """
+        Update both first and second sound wave solvers.
+        """
+        self.first_sound_solver.step()
+        self.second_sound_solver.step()
+        
+        # Integrate wave solver results back into main simulation
+        # This is crucial for capturing the interplay between different wave types
+        
+        # Add irrotational component from first sound solver
+        self.velocity[0] += self.first_sound_solver.vx
+        self.velocity[1] += self.first_sound_solver.vy
+        self.velocity[2] += self.first_sound_solver.vz
+        
+        # Add acceleration component from second sound solver
+        self.acceleration[0] += self.second_sound_solver.ax
+        self.acceleration[1] += self.second_sound_solver.ay
+        self.acceleration[2] += self.second_sound_solver.az
+    
+    def add_quantized_vortex(self, 
+                             center: Tuple[float, float, float], 
+                             circulation: float,
+                             axis: Tuple[float, float, float] = (0, 0, 1),
+                             core_radius: float = 3.0):
+        """
+        Add a quantized vortex to the velocity field.
+        
+        In Space Time Potential Theory, particles are represented as
+        quantized vortices in the substrate.
+        
+        Parameters
+        ----------
+        center : Tuple[float, float, float]
+            Position of the vortex center in grid coordinates
+        circulation : float
+            Strength of circulation [m²/s]
+        axis : Tuple[float, float, float]
+            Direction of the vortex axis
+        core_radius : float
+            Radius of the vortex core in grid cells
+        """
+        # Convert center to integer indices
+        ix = int(center[0] / self.dx)
+        iy = int(center[1] / self.dx)
+        iz = int(center[2] / self.dx)
+        
+        # Generate quantized vortex velocity field
+        vx_vortex, vy_vortex, vz_vortex = quantized_vortex(
+            self.nx, self.ny, self.nz, (ix, iy, iz), 
+            circulation, axis, int(core_radius)
+        )
+        
+        # Add to velocity field
+        self.velocity[0] += vx_vortex
+        self.velocity[1] += vy_vortex
+        self.velocity[2] += vz_vortex
+        
+        # Update derived fields
+        self.update_vorticity()
+        self.update_action_flux()
+    
+    def calculate_energy(self) -> Dict[str, float]:
+        """
+        Calculate the energy components in the simulation.
+        
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary with different energy components:
+            - 'kinetic': Kinetic energy
+            - 'electromagnetic': Electromagnetic energy
+            - 'first_sound': Energy in density waves
+            - 'second_sound': Energy in temperature waves
+            - 'total': Total energy
+        """
+        # Calculate kinetic energy
+        vx = self.velocity[0]
+        vy = self.velocity[1]
+        vz = self.velocity[2]
+        kinetic_density = 0.5 * self.background_density * (vx**2 + vy**2 + vz**2)
+        kinetic_energy = np.sum(kinetic_density) * self.dx**3
+        
+        # Calculate electromagnetic energy
+        ex = self.electric_field[0]
+        ey = self.electric_field[1]
+        ez = self.electric_field[2]
+        bx = self.magnetic_field[0]
+        by = self.magnetic_field[1]
+        bz = self.magnetic_field[2]
+        
+        # ε₀ = 1/(c²μ₀) = 1/(c²/η)
+        epsilon_0 = 1.0 / (VISCOSITY * (C_LIGHT**2))
+        
+        e_energy_density = 0.5 * epsilon_0 * (ex**2 + ey**2 + ez**2)
+        b_energy_density = 0.5 / VISCOSITY * (bx**2 + by**2 + bz**2)
+        em_energy = np.sum(e_energy_density + b_energy_density) * self.dx**3
+        
+        # First sound energy
+        rho_p = self.first_sound_solver.density_perturbation
+        v_p = self.first_sound_solver.velocity_perturbation
+        first_sound_energy = np.sum(0.5 * (rho_p**2 + v_p**2)) * self.dx**3
+        
+        # Second sound energy 
+        theta_p = self.second_sound_solver.temperature_perturbation
+        v_theta = self.second_sound_solver.temp_velocity
+        second_sound_energy = np.sum(0.5 * (theta_p**2 + v_theta**2)) * self.dx**3
+        
+        # Total energy
+        total_energy = kinetic_energy + em_energy + first_sound_energy + second_sound_energy
+        
+        return {
+            'kinetic': kinetic_energy,
+            'electromagnetic': em_energy,
+            'first_sound': first_sound_energy,
+            'second_sound': second_sound_energy,
+            'total': total_energy
+        }
 
 # PROMPT: Additional classes to implement:
 # 1. FirstSoundSolver - For simulating density perturbations
