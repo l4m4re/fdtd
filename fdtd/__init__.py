@@ -15,8 +15,9 @@ from .fourier import FrequencyRoutines
 from .visualization import dB_map_2D, plot_detection
 
 # Space Time Potential Theory extensions
-from .ai_aethergrid import AetherGrid, VISCOSITY, C_LIGHT, BACKGROUND_DENSITY
-from .ai_operators import (
-    grad, div, curl_face_to_edge, curl_edge_to_face, vector_laplacian,
-    quantize_circulation
+from .operators import (
+    gradient, divergence, curl_face_to_edge, curl_edge_to_face,
+    vector_laplacian, scalar_laplacian, helmholtz_decomposition
 )
+from .potentialgrid import PotentialGrid, C_LIGHT, VISCOSITY, BACKGROUND_DENSITY
+from .wave_solvers import FirstSoundSolver, SecondSoundSolver

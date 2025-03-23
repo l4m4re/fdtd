@@ -13,6 +13,7 @@ References:
 
 import numpy as np
 from typing import Tuple, Optional, Dict, Any
+from .backend import backend
 from .operators import scalar_laplacian, gradient, divergence
 
 class FirstSoundSolver:
@@ -46,6 +47,9 @@ class FirstSoundSolver:
         background_density : float
             Background density ρ₀ of the substrate [kg/m³]
         """
+        # Add backend
+        self.xp = backend  # Access backend directly
+        
         self.nx = nx
         self.ny = ny
         self.nz = nz
@@ -63,17 +67,17 @@ class FirstSoundSolver:
             print(f"Warning: CFL condition not satisfied. CFL = {cfl} > 1.0")
             print(f"Consider reducing dt or increasing dx")
         
-        # Fields
-        self.density_perturbation = np.zeros((nx, ny, nz))
-        self.velocity_perturbation = np.zeros((nx, ny, nz))  # ∂ρ'/∂t
+        # Fields - use backend's array creation
+        self.density_perturbation = self.xp.zeros((nx, ny, nz))
+        self.velocity_perturbation = self.xp.zeros((nx, ny, nz))  # ∂ρ'/∂t
         
         # Scalar potential from density perturbation
-        self.scalar_potential = np.zeros((nx, ny, nz))
+        self.scalar_potential = self.xp.zeros((nx, ny, nz))
         
         # Velocity field derived from density perturbation
-        self.vx = np.zeros((nx, ny, nz))
-        self.vy = np.zeros((nx, ny, nz))
-        self.vz = np.zeros((nx, ny, nz))
+        self.vx = self.xp.zeros((nx, ny, nz))
+        self.vy = self.xp.zeros((nx, ny, nz))
+        self.vz = self.xp.zeros((nx, ny, nz))
     
     def add_gaussian_perturbation(self, center: Tuple[int, int, int], 
                                  amplitude: float, width: float):
@@ -174,6 +178,9 @@ class SecondSoundSolver:
         density : float
             Density ρ of the substrate [kg/m³]
         """
+        # Add backend
+        self.xp = backend  # Access backend directly
+        
         self.nx = nx
         self.ny = ny
         self.nz = nz
@@ -182,18 +189,18 @@ class SecondSoundSolver:
         self.viscosity = viscosity
         self.density = density
         
-        # Fields
-        self.temperature_perturbation = np.zeros((nx, ny, nz))
-        self.temp_velocity = np.zeros((nx, ny, nz))  # ∂θ'/∂t
-        self.temp_acceleration = np.zeros((nx, ny, nz))  # ∂²θ'/∂t²
+        # Fields - use backend's array creation
+        self.temperature_perturbation = self.xp.zeros((nx, ny, nz))
+        self.temp_velocity = self.xp.zeros((nx, ny, nz))  # ∂θ'/∂t
+        self.temp_acceleration = self.xp.zeros((nx, ny, nz))  # ∂²θ'/∂t²
         
         # Temperature potential (∇·(η·a))
-        self.temperature_potential = np.zeros((nx, ny, nz))
+        self.temperature_potential = self.xp.zeros((nx, ny, nz))
         
         # Derived acceleration field
-        self.ax = np.zeros((nx, ny, nz))
-        self.ay = np.zeros((nx, ny, nz))
-        self.az = np.zeros((nx, ny, nz))
+        self.ax = self.xp.zeros((nx, ny, nz))
+        self.ay = self.xp.zeros((nx, ny, nz))
+        self.az = self.xp.zeros((nx, ny, nz))
     
     def add_gaussian_perturbation(self, center: Tuple[int, int, int], 
                                  amplitude: float, width: float):
