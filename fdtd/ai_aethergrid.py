@@ -15,15 +15,19 @@ References:
 """
 
 import numpy as np
-from typing import Tuple, Optional, Dict, Any
-from .operators import gradient, divergence, curl, vector_laplacian
-from .wave_solvers import FirstSoundSolver, SecondSoundSolver
-from .operators import helmholtz_decomposition, quantized_vortex
+from typing import Tuple, Optional, Union, Callable
+from .backend import backend, get_backend_name
+from .ai_operators import (
+    grad, div, curl_face_to_edge, curl_edge_to_face, vector_laplacian
+)
 
 # Physical constants
-VISCOSITY = 1/(4*np.pi*1e-7)  # η - dynamic viscosity [Pa·s]
-C_LIGHT = 299792458.0  # Speed of light [m/s]
-BACKGROUND_DENSITY = VISCOSITY/(C_LIGHT**2)  # ρ₀ = η/c² [kg/m³]
+C_LIGHT = 299792458.0          # speed of light [m/s]
+VISCOSITY = 1/(4*np.pi*1e-7)   # vacuum viscosity [Pa·s]
+VISCOSITY_HAT = 4*np.pi*VISCOSITY  # geometric viscosity [Pa·s]
+BACKGROUND_DENSITY = 1.0       # normalized substrate density [kg/m³]
+PLANCK_CONSTANT = 6.62607015e-34  # Planck's constant [J·s]
+AETHER_PARTICLE_MASS = PLANCK_CONSTANT / (VISCOSITY / BACKGROUND_DENSITY)  # [kg]
 
 class AetherGrid:
     """
@@ -44,7 +48,7 @@ class AetherGrid:
                  ny: int, 
                  nz: int,
                  dx: float = 1.0,
-                 dt: float = 0.1,
+                 dt: float = None,
                  viscosity: float = VISCOSITY,
                  background_density: float = BACKGROUND_DENSITY):
         """
@@ -65,7 +69,7 @@ class AetherGrid:
         """
         self.nx, self.ny, self.nz = nx, ny, nz
         self.dx = dx
-        self.dt = dt
+        self.dt = dt if dt is not None else dx / C_LIGHT
         self.viscosity = viscosity
         self.background_density = background_density
         
@@ -107,10 +111,10 @@ class AetherGrid:
         
         # Add wave solvers
         self.first_sound_solver = FirstSoundSolver(
-            nx, ny, nz, dx, dt, viscosity, background_density
+            nx, ny, nz, dx, self.dt, viscosity, background_density
         )
         self.second_sound_solver = SecondSoundSolver(
-            nx, ny, nz, dx, dt, viscosity, background_density
+            nx, ny, nz, dx, self.dt, viscosity, background_density
         )
     
     def update_vorticity(self):
@@ -129,7 +133,7 @@ class AetherGrid:
         vz = self.velocity[2]
         
         # Calculate curl
-        wx, wy, wz = curl(vx, vy, vz, self.dx, self.dx, self.dx)
+        wx, wy, wz = curl_face_to_edge(vx, vy, vz, self.dx, self.dx, self.dx)
         
         # Update vorticity field
         self.vorticity[0] = wx
@@ -152,7 +156,7 @@ class AetherGrid:
         az = self.acceleration[2]
         
         # Calculate curl
-        alphax, alphay, alphaz = curl(ax, ay, az, self.dx, self.dx, self.dx)
+        alphax, alphay, alphaz = curl_face_to_edge(ax, ay, az, self.dx, self.dx, self.dx)
         
         # Update angular acceleration field
         self.angular_acceleration[0] = alphax
@@ -203,7 +207,7 @@ class AetherGrid:
         cz = self.action_flux[2]
         
         # Scalar potential φ = ∇·C
-        self.scalar_potential = divergence(cx, cy, cz, self.dx, self.dx, self.dx)
+        self.scalar_potential = div(cx, cy, cz, self.dx, self.dx, self.dx)
         
         # Vector potential A = η/ρ·ω
         factor = self.viscosity / self.background_density
@@ -217,7 +221,7 @@ class AetherGrid:
         iz = self.radiosity[2]
         
         # Temperature potential T = ∇·I
-        self.temperature_potential = divergence(ix, iy, iz, self.dx, self.dx, self.dx)
+        self.temperature_potential = div(ix, iy, iz, self.dx, self.dx, self.dx)
         
         # Second vector potential χ = η/ρ·α
         self.second_vector_potential[0] = factor * self.angular_acceleration[0]
@@ -241,11 +245,11 @@ class AetherGrid:
         
         # Electric field E = ∇·C/ε₀
         # Note: 1/ε₀ = c²μ₀ = c²/η
-        div_C = divergence(cx, cy, cz, self.dx, self.dx, self.dx)
+        div_C = div(cx, cy, cz, self.dx, self.dx, self.dx)
         factor_E = (C_LIGHT**2) / self.viscosity
         
         # Gradient of scalar potential
-        ex, ey, ez = gradient(div_C, self.dx, self.dx, self.dx)
+        ex, ey, ez = grad(div_C, self.dx, self.dx, self.dx)
         
         self.electric_field[0] = factor_E * ex
         self.electric_field[1] = factor_E * ey
@@ -253,7 +257,7 @@ class AetherGrid:
         
         # Magnetic field B = μ₀·∇×C
         # Note: μ₀ = 1/η
-        bx, by, bz = curl(cx, cy, cz, self.dx, self.dx, self.dx)
+        bx, by, bz = curl_edge_to_face(cx, cy, cz, self.dx, self.dx, self.dx)
         factor_B = 1.0 / self.viscosity
         
         self.magnetic_field[0] = factor_B * bx
@@ -428,11 +432,11 @@ class AetherGrid:
         self.solenoidal_velocity = np.array([vx_sol, vy_sol, vz_sol])
         
         # Update density perturbation based on divergence of irrotational component
-        div_irrot = divergence(vx_irrot, vy_irrot, vz_irrot, self.dx, self.dx, self.dx)
+        div_irrot = div(vx_irrot, vy_irrot, vz_irrot, self.dx, self.dx, self.dx)
         self.first_sound_solver.density_perturbation = div_irrot
         
         # Update vorticity based on curl of solenoidal component
-        wx, wy, wz = curl(vx_sol, vy_sol, vz_sol, self.dx, self.dx, self.dx)
+        wx, wy, wz = curl_face_to_edge(vx_sol, vy_sol, vz_sol, self.dx, self.dx, self.dx)
         self.vorticity[0] = wx
         self.vorticity[1] = wy
         self.vorticity[2] = wz
@@ -555,8 +559,190 @@ class AetherGrid:
             'second_sound': second_sound_energy,
             'total': total_energy
         }
+    
+    def add_vortex_ring(self, 
+                         center: Tuple[float, float, float],
+                         radius: float, 
+                         strength: float = None, 
+                         orientation: Tuple[float, float, float] = (0, 0, 1),
+                         quantized: bool = True):
+        """
+        Add a vortex ring to the velocity field.
+        
+        Parameters
+        ----------
+        center : Tuple[float, float, float]
+            Position of the vortex ring center in grid coordinates
+        radius : float
+            Radius of the vortex ring
+        strength : float
+            Strength of the vortex ring
+        orientation : Tuple[float, float, float]
+            Orientation of the vortex ring axis
+        quantized : bool
+            Whether the vortex ring is quantized
+        """
+        # Convert center to integer indices
+        ix = int(center[0] / self.dx)
+        iy = int(center[1] / self.dx)
+        iz = int(center[2] / self.dx)
+        
+        # Generate vortex ring velocity field
+        vx_ring, vy_ring, vz_ring = quantized_vortex(
+            self.nx, self.ny, self.nz, (ix, iy, iz), 
+            radius, orientation, int(radius)
+        )
+        
+        # Add to velocity field
+        self.velocity[0] += vx_ring
+        self.velocity[1] += vy_ring
+        self.velocity[2] += vz_ring
+        
+        # Update derived fields
+        self.update_vorticity()
+        self.update_action_flux()
+    
+    def update_vorticity_from_velocity(self):
+        """
+        Update the vorticity field from the velocity field.
+        """
+        vx = self.velocity[0]
+        vy = self.velocity[1]
+        vz = self.velocity[2]
+        
+        wx, wy, wz = curl_face_to_edge(vx, vy, vz, self.dx, self.dx, self.dx)
+        
+        self.vorticity[0] = wx
+        self.vorticity[1] = wy
+        self.vorticity[2] = wz
+    
+    def update_velocity_from_vorticity(self):
+        """
+        Update the velocity field from the vorticity field.
+        """
+        wx = self.vorticity[0]
+        wy = self.vorticity[1]
+        wz = self.vorticity[2]
+        
+        vx, vy, vz = curl_edge_to_face(wx, wy, wz, self.dx, self.dx, self.dx)
+        
+        self.velocity[0] = vx
+        self.velocity[1] = vy
+        self.velocity[2] = vz
+    
+    def project_velocity(self):
+        """
+        Project the velocity field to ensure incompressibility.
+        """
+        vx = self.velocity[0]
+        vy = self.velocity[1]
+        vz = self.velocity[2]
+        
+        div_v = div(vx, vy, vz, self.dx, self.dx, self.dx)
+        
+        vx -= grad(div_v, self.dx, self.dx, self.dx)[0]
+        vy -= grad(div_v, self.dx, self.dx, self.dx)[1]
+        vz -= grad(div_v, self.dx, self.dx, self.dx)[2]
+        
+        self.velocity[0] = vx
+        self.velocity[1] = vy
+        self.velocity[2] = vz
+    
+    def apply_vector_laplacian_to_velocity(self):
+        """
+        Apply the vector Laplacian to the velocity field.
+        """
+        vx = self.velocity[0]
+        vy = self.velocity[1]
+        vz = self.velocity[2]
+        
+        lap_vx, lap_vy, lap_vz = vector_laplacian(vx, vy, vz, self.dx, self.dx, self.dx)
+        
+        self.velocity[0] = lap_vx
+        self.velocity[1] = lap_vy
+        self.velocity[2] = lap_vz
+    
+    def apply_vorticity_evolution(self):
+        """
+        Apply the vorticity evolution equation to the vorticity field.
+        """
+        wx = self.vorticity[0]
+        wy = self.vorticity[1]
+        wz = self.vorticity[2]
+        
+        lap_wx, lap_wy, lap_wz = vector_laplacian(wx, wy, wz, self.dx, self.dx, self.dx)
+        
+        self.vorticity[0] = lap_wx
+        self.vorticity[1] = lap_wy
+        self.vorticity[2] = lap_wz
+    
+    def calculate_energy_density(self):
+        """
+        Calculate the energy density in the simulation.
+        """
+        vx = self.velocity[0]
+        vy = self.velocity[1]
+        vz = self.velocity[2]
+        
+        kinetic_density = 0.5 * self.background_density * (vx**2 + vy**2 + vz**2)
+        
+        ex = self.electric_field[0]
+        ey = self.electric_field[1]
+        ez = self.electric_field[2]
+        bx = self.magnetic_field[0]
+        by = self.magnetic_field[1]
+        bz = self.magnetic_field[2]
+        
+        epsilon_0 = 1.0 / (VISCOSITY * (C_LIGHT**2))
+        
+        e_energy_density = 0.5 * epsilon_0 * (ex**2 + ey**2 + ez**2)
+        b_energy_density = 0.5 / VISCOSITY * (bx**2 + by**2 + bz**2)
+        
+        return kinetic_density + e_energy_density + b_energy_density
+    
+    def step(self):
+        """
+        Perform a single time step of the simulation.
+        """
+        self.update_acceleration()
+        self.update_velocity_from_vorticity()
+        self.project_velocity()
+        self.apply_vector_laplacian_to_velocity()
+        self.apply_vorticity_evolution()
+        self.update_vorticity_from_velocity()
+        self.update_action_flux()
+        self.update_radiosity()
+        self.update_potentials()
+        self.update_electromagnetic_fields()
+    
+    @property
+    def E(self):
+        """
+        Get the electric field.
+        """
+        return self.electric_field
+    
+    @property
+    def B(self):
+        """
+        Get the magnetic field.
+        """
+        return self.magnetic_field
 
-# PROMPT: Additional classes to implement:
-# 1. FirstSoundSolver - For simulating density perturbations
-# 2. SecondSoundSolver - For simulating temperature waves
-# 3. AetherParticle - For modeling quantized vortex structures in the substrate
+    def run(self, steps: int, callback: Callable = None, callback_interval: int = 1):
+        """
+        Run the simulation for a given number of steps.
+        
+        Parameters
+        ----------
+        steps : int
+            Number of steps to run the simulation
+        callback : Callable
+            Callback function to call after each step
+        callback_interval : int
+            Interval at which to call the callback function
+        """
+        for step in range(steps):
+            self.step()
+            if callback and step % callback_interval == 0:
+                callback(step)
