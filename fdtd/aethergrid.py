@@ -1,58 +1,29 @@
-""" The FDTD Aether Grid
+"""Experimental aether-style grid built on the public ``fdtd`` package.
 
-The grid is the core of the FDTD Library. It is where everything comes together
-and where the biggest part of the calculations are done.
+``AetherGrid`` is an opt-in experimental companion to :class:`fdtd.grid.Grid`.
+It keeps the overall package style familiar:
 
-This grid is an experimental implementation of a new aether theory, based on the
-discovery of the quantum circulation constant, kinematic viscosity or
-diffusivity k, with a value equal to light speed c squared but a unit of
-[m^2/s].
-    
-This theory is documented in this jupyter notebook:
-    
-https://github.com/l4m4re/notebooks/blob/main/aether_physics.ipynb
-        
-Key point is that the quantum circulation constant can be combined with the
-vector LaPlace operator to define the time derivative of any given vector field
-F within the aether by:
+- same grid construction style,
+- same backend abstraction,
+- same scene-registration concepts for sources / boundaries / detectors,
+- and the same educational emphasis on explicit finite differences.
 
-dF/dt = -k Delta F,
+The intended theory direction is different from Maxwell, however. Instead of
+updating only ``E`` and ``H`` through first-order curl equations, the aether
+path introduces an intermediate mechanical chain
 
-with Delta the LaPlace operator. 
+``v -> p, omega -> f, tau -> E, H -> A -> a -> dpdt, alpha -> dEdt, dHdt -> dAdt -> j``.
 
-From here, we can define the acceleration field a as the time derivative of the
-velocity field v by:
+At the moment this implementation should be read as an experimental bridge, not
+as a finished STPT simulator:
 
-a = d/dt v = -k Delta v,
+- it still uses collocated ``(Nx, Ny, Nz, 3)`` arrays for most vector fields;
+- it still follows an older constant-``k`` formulation at the code level;
+- and it has not yet reached parity with the more ambitious split linear /
+  angular geometry discussed elsewhere in the repository.
 
-and jerk j as the time derivative of the acceleration field a by:
-
-j = d/dt a = -k Delta a = k^2 Delta^2 v.
-
-This way, we obtain a second order model, in contrast to Maxwell's equations as
-well as Navier-Stokes equations, so we can define second order LaPlace and
-Poisson equations in full 3D, which was heretofore impossible.
-
-An interesting detail is that the wave equation for the velocity field v can be
-written as:
-
-j/c^2 + a/k = 0,
-
-which is a full 3D second order wave equation, illustrating the expressive power
-of utilizing the vector LaPlace operator, the second spatial derivative, when
-combined with the quantum circulation constant k.
-
-By writing out the definition of the vector LaPlacian for the acceleration and
-jerk fields, various fields can be defined, amongst others the electric and
-magnetic fields as well as uniquely defined scalar and vector potentials,
-leaving no room for "gauge fixing".
-
-Another key point is that there are only three units of measurement in this
-model: the meter, the second and the kilogram. Within this model, electric
-charge has a unit in [kg/s], while the electric field has a unit of velocity in
-[m/s]. And the magnetic field B has a unit in [/m-s], while the magnetizing field
-H has a unit in [kg/m^2-s^2].
-
+That makes this module a good integration surface for the fork, but not yet the
+final statement of the theory.
 """
 
 ## Imports
@@ -114,12 +85,13 @@ inv_rho_q0 = 1/rho_q0
 
 ## FDTD Grid Class
 class AetherGrid:
-    """The FDTD Aether Grid
+    """Experimental aether grid that mirrors the public ``fdtd.Grid`` API.
 
-    The grid is the core of the FDTD Library. It is where everything comes
-    together and where the biggest part of the calculations are done.
-    
-    
+    The class is deliberately close to :class:`fdtd.grid.Grid` so that existing
+    examples, sources, boundaries, and detectors remain understandable.
+    Unlike ``Grid``, however, the primary state is an aether velocity field
+    ``v`` together with derived scalar, rotational, electromagnetic, and
+    second-order fields.
     """
 
     from .visualization import visualize
@@ -210,7 +182,7 @@ class AetherGrid:
         self.dtau_dt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
         
         # second order yank density and vector potential
-        self.y      = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.yank   = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
         self.dAdt   = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
         
         # second order electric and magnetic fields
@@ -350,16 +322,27 @@ class AetherGrid:
             self.step()
     
     def step(self):
-        """do a single FDTD step by first computing acceleration, jerk
-        and the intermediate fields, and then updating the velocity field.
-        """
+        """Advance the experimental aether system by one timestep."""
 
         self.update()
         
         self.time_steps_passed += 1
         
     def update(self):
-        """ update the fields along the vector Laplace operator """
+        """Update all intermediate and dynamical aether fields once.
+
+        The current implementation follows a compact STPT-inspired chain:
+
+        1. derive scalar and rotational first-order fields from ``v``;
+        2. derive ``E`` and ``H``-like fields from those first-order fields;
+        3. derive the vector-potential-like field ``A`` and acceleration ``a``;
+        4. repeat the same pattern one derivative level higher to obtain jerk
+           ``j``;
+        5. advance ``v`` using both ``a`` and ``j``.
+
+        This is intentionally explicit and educational, even though the theory
+        itself is still in flux.
+        """
         
         self.updateBoundaries()
         
@@ -393,10 +376,10 @@ class AetherGrid:
         self.dtau_dt = eta * self.alpha
         
         # linear yank density field
-        self.y      = - grad(self.dpdt)
-        
+        self.yank   = - grad(self.dpdt)
+
         # time derivative of electric and magnetic fields
-        self.dEdt   = inv_rho_q0 * self.y
+        self.dEdt   = inv_rho_q0 * self.yank
         self.dHdt   = eta_e      * self.dtau_dt
         
         # update dEdt and dHdt ?
@@ -406,7 +389,7 @@ class AetherGrid:
         self.dAdt   = curl_face_to_edge(e_eta * self.dHdt)
         
         # acceleration field
-        self.j      = rho_q0 * self.dEdtE + inv_rho * self.dAdt
+        self.j      = rho_q0 * self.dEdt + inv_rho * self.dAdt
         
     
         # update velocity field
@@ -415,6 +398,7 @@ class AetherGrid:
 
 
     def updateBoundaries(self):
+        """Hook for boundary updates in the experimental aether path."""
 
         # update boundaries: step 1
         #for boundary in self.boundaries:
@@ -425,6 +409,7 @@ class AetherGrid:
 
 
     def updateEH(self):    
+        """Hook for source/object/detector updates of ``E``/``H``-like fields."""
         # update objects
         #for obj in self.objects:
         #    obj.update_E(curl)
@@ -471,7 +456,7 @@ class AetherGrid:
         self.alpha  *= 0.0 
         self.dtau_dt *= 0.0
 
-        self.y      *= 0.0
+        self.yank   *= 0.0
 
         self.dEdt   *= 0.0
         self.dHdt   *= 0.0

@@ -15,6 +15,7 @@ Docs
    :maxdepth: 2
 
    examples
+   aether
    fdtd
 
 
@@ -358,4 +359,3 @@ matplotlib image. ::
     grid.visualize(z=0)
 
 .. image:: _static/grid.png
-

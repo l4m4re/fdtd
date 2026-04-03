@@ -5,6 +5,7 @@ __version__ = "0.3.6"
 
 # Original FDTD components
 from .grid import Grid
+from .aethergrid import AetherGrid
 from .sources import PointSource, LineSource, PlaneSource
 from .detectors import LineDetector, BlockDetector, CurrentDetector
 from .objects import Object, AbsorbingObject, AnisotropicObject

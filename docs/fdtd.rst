@@ -25,10 +25,26 @@ detectors module
    :undoc-members:
    :show-inheritance:
 
+operators module
+----------------
+
+.. automodule:: fdtd.operators
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 grid module
 -----------
 
 .. automodule:: fdtd.grid
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+aethergrid module
+-----------------
+
+.. automodule:: fdtd.aethergrid
    :members:
    :undoc-members:
    :show-inheritance:
@@ -48,4 +64,3 @@ sources module
    :members:
    :undoc-members:
    :show-inheritance:
-
