@@ -2,6 +2,7 @@
 docs/examples
 examples/fdtd
 examples/fdtd_output
+fdtd_output/
 
 # documentation
 docs/_build
@@ -58,4 +59,3 @@ htmlcov/*
 # pip
 build
 dist
-

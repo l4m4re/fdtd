@@ -1,29 +1,23 @@
-"""Experimental aether-style grid built on the public ``fdtd`` package.
+"""Experimental aether grid built on the public ``fdtd`` package.
 
-``AetherGrid`` is an opt-in experimental companion to :class:`fdtd.grid.Grid`.
-It keeps the overall package style familiar:
+``AetherGrid`` is an opt-in companion to :class:`fdtd.grid.Grid`. It keeps the
+same educational package style:
 
-- same grid construction style,
-- same backend abstraction,
-- same scene-registration concepts for sources / boundaries / detectors,
-- and the same educational emphasis on explicit finite differences.
+- the grid owns the timestep loop;
+- sources, boundaries, detectors, and objects register through ``grid[...] =``;
+- and all numerics go through the shared backend abstraction.
 
-The intended theory direction is different from Maxwell, however. Instead of
-updating only ``E`` and ``H`` through first-order curl equations, the aether
-path introduces an intermediate mechanical chain
+The theory path is different from Maxwell, however. Instead of updating only
+``E`` and ``H`` with first-order curl equations, the aether path evolves a
+velocity-like linear state together with a separate angular sector and derived
+scalar, electromagnetic, acceleration, and jerk fields.
 
-``v -> p, omega -> f, tau -> E, H -> A -> a -> dpdt, alpha -> dEdt, dHdt -> dAdt -> j``.
-
-At the moment this implementation should be read as an experimental bridge, not
-as a finished STPT simulator:
-
-- it still uses collocated ``(Nx, Ny, Nz, 3)`` arrays for most vector fields;
-- it still follows an older constant-``k`` formulation at the code level;
-- and it has not yet reached parity with the more ambitious split linear /
-  angular geometry discussed elsewhere in the repository.
-
-That makes this module a good integration surface for the fork, but not yet the
-final statement of the theory.
+This module is still experimental. It currently uses collocated vector fields
+for clarity and package compatibility even though the longer-term STPT program
+likely requires a more explicit split between linear and angular sectors. The
+current refactor makes that split visible in the code structure while still
+using the legacy bridge where angular quantities are derived from the linear
+sector.
 """
 
 ## Imports
@@ -45,7 +39,12 @@ from .typing_ import Tuple, Number, Tensorlike
 # relative
 from .backend import backend as bd
 
-from .operators import curl_edge_to_face, curl_face_to_edge, grad, div
+from .operators import (
+    angular_to_linear_bridge,
+    div,
+    grad,
+    linear_to_angular_bridge,
+)
 
 
 from math import pi
@@ -85,14 +84,7 @@ inv_rho_q0 = 1/rho_q0
 
 ## FDTD Grid Class
 class AetherGrid:
-    """Experimental aether grid that mirrors the public ``fdtd.Grid`` API.
-
-    The class is deliberately close to :class:`fdtd.grid.Grid` so that existing
-    examples, sources, boundaries, and detectors remain understandable.
-    Unlike ``Grid``, however, the primary state is an aether velocity field
-    ``v`` together with derived scalar, rotational, electromagnetic, and
-    second-order fields.
-    """
+    """Experimental aether grid that mirrors the public ``fdtd.Grid`` API."""
 
     from .visualization import visualize
 
@@ -156,41 +148,38 @@ class AetherGrid:
         # timestep of the simulation
         self.time_step = self.courant_number * self.grid_spacing / ((pi/2) * c)
         
-        # define fields
-        # velocity
-        self.v = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        
-        # first order scalar potential and torque density
-        self.p      = bd.zeros((self.Nx, self.Ny, self.Nz))
-        self.omega  = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        self.tau    = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        
-        # first order force density and vector potential
-        self.f = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        self.A = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        
-        # first order electric and magnetic fields
-        self.E = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        self.H = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        
-        # acceleration
-        self.a = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        
-        # second order scalar potential and torque density time derivative
-        self.dpdt    = bd.zeros((self.Nx, self.Ny, self.Nz))
-        self.alpha   = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        self.dtau_dt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        
-        # second order yank density and vector potential
-        self.yank   = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        self.dAdt   = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        
-        # second order electric and magnetic fields
-        self.dEdt   = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        self.dHdt   = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
-        
-        # jerk
-        self.j      = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        # The linear and angular sectors currently share the same sampled grid
+        # spacing, but we keep both handles explicit because the angular branch
+        # carries its own lever-arm length scale in the intended geometry.
+        self.linear_grid_spacing = self.grid_spacing
+        self.angular_grid_spacing = self.grid_spacing
+        self.angular_metric_length = (
+            bd.ones((self.Nx, self.Ny, self.Nz, 1), dtype=bd.float)
+            * self.angular_grid_spacing
+        )
+
+        # define linear-sector fields
+        self.linear_v = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.linear_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.linear_f = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.linear_E = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.linear_a = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.linear_dpdt = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.linear_yank = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.linear_dEdt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.linear_j = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+
+        # define angular-sector fields
+        self.angular_omega = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_tau = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_H = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_A = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_alpha = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_dtau_dt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_dHdt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_dAdt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+
+        self._sync_public_aliases()
         
         # save the inverse of the relative permittiviy and the relative permeability
         # these tensors can be anisotropic!
@@ -304,6 +293,28 @@ class AetherGrid:
         """get the total time passed"""
         return self.time_steps_passed * self.time_step
 
+    def _sync_public_aliases(self):
+        """Expose legacy field names as views onto explicit sector state."""
+
+        self.v = self.linear_v
+        self.p = self.linear_p
+        self.f = self.linear_f
+        self.E = self.linear_E
+        self.a = self.linear_a
+        self.dpdt = self.linear_dpdt
+        self.yank = self.linear_yank
+        self.dEdt = self.linear_dEdt
+        self.j = self.linear_j
+
+        self.omega = self.angular_omega
+        self.tau = self.angular_tau
+        self.H = self.angular_H
+        self.A = self.angular_A
+        self.alpha = self.angular_alpha
+        self.dtau_dt = self.angular_dtau_dt
+        self.dHdt = self.angular_dHdt
+        self.dAdt = self.angular_dAdt
+
     def run(self, total_time: Number, progress_bar: bool = True):
         """run an FDTD simulation.
 
@@ -329,107 +340,142 @@ class AetherGrid:
         self.time_steps_passed += 1
         
     def update(self):
-        """Update all intermediate and dynamical aether fields once.
+        """Update all experimental aether fields once.
 
-        The current implementation follows a compact STPT-inspired chain:
+        The current chain is intentionally explicit:
 
-        1. derive scalar and rotational first-order fields from ``v``;
-        2. derive ``E`` and ``H``-like fields from those first-order fields;
-        3. derive the vector-potential-like field ``A`` and acceleration ``a``;
-        4. repeat the same pattern one derivative level higher to obtain jerk
-           ``j``;
-        5. advance ``v`` using both ``a`` and ``j``.
-
-        This is intentionally explicit and educational, even though the theory
-        itself is still in flux.
+        1. apply any native aether sources to the linear sector;
+        2. derive first-order linear fields from the translational state;
+        3. derive the current temporary angular bridge from the linear sector;
+        4. expose ``E`` and ``H``-like observables and run package-style scene
+           hooks;
+        5. couple the angular sector back into linear acceleration;
+        6. repeat the same pattern one derivative level higher to obtain jerk;
+        7. advance the linear state with the resulting Taylor step.
         """
-        
+
         self.updateBoundaries()
-        
-      
-         # scalar potential and torque density fields
-        self.p      = eta * div (self.v)
-        self.omega  =       curl_edge_to_face(self.v)
-        self.tau    = eta * self.omega
-        
-        # linear force density field
-        self.f      = - grad(self.p)
-        
-        # electric and magnetic fields
-        self.E      = inv_rho_q0 * self.f
-        self.H      = eta_e      * self.tau
-        
-        # update E and H 
+
+        self.apply_native_sources()
+        self.update_linear_sector()
+        self.update_angular_sector()
+        self._sync_public_aliases()
+
+        # Existing package hooks still operate on E/H-like observables.
         self.updateEH()
+        self.update_linear_angular_coupling()
+        self.update_second_order_linear_sector()
+        self.update_second_order_angular_sector()
+        self.update_second_order_coupling()
+        self._sync_public_aliases()
+        self.advance_linear_sector()
 
-        # vector potential
-        self.A      = curl_face_to_edge(e_eta * self.H)
-        
-        # acceleration field
-        self.a      = rho_q0 * self.E + inv_rho * self.A
-        
+    def apply_native_sources(self):
+        """Inject any aether-native sources into the linear translational sector."""
 
-        # second order scalar potential and time derivative
-        # of torque density fields
-        self.dpdt    = eta * div (self.a)
-        self.alpha   =       curl_edge_to_face(self.a)
-        self.dtau_dt = eta * self.alpha
-        
-        # linear yank density field
-        self.yank   = - grad(self.dpdt)
+        for src in self.sources:
+            update_v = getattr(src, "update_v", None)
+            if update_v is not None:
+                update_v()
 
-        # time derivative of electric and magnetic fields
-        self.dEdt   = inv_rho_q0 * self.yank
-        self.dHdt   = eta_e      * self.dtau_dt
-        
-        # update dEdt and dHdt ?
-        #self.updatedEHdt()
+    def update_linear_sector(self):
+        """Update first-order linear quantities from the linear state."""
 
-        # vector potential
-        self.dAdt   = curl_face_to_edge(e_eta * self.dHdt)
-        
-        # acceleration field
-        self.j      = rho_q0 * self.dEdt + inv_rho * self.dAdt
-        
-    
-        # update velocity field
-        self.v      += self.courant_number    * self.a
-        self.v      += self.courant_number**2 * self.j
+        self.linear_p = eta * div(self.linear_v)
+        self.linear_f = -grad(self.linear_p)
+        self.linear_E = inv_rho_q0 * self.linear_f
+
+    def update_angular_sector(self):
+        """Update the angular sector from the current temporary bridge.
+
+        The long-term design goal is a native angular state with its own
+        constitutive update. For now this sector is still derived from the
+        linear branch so we can refactor the grid structure without discarding
+        the current runnable baseline.
+        """
+
+        self.angular_omega = linear_to_angular_bridge(self.linear_v)
+        self.angular_tau = eta * self.angular_omega
+        self.angular_H = eta_e * self.angular_tau
+
+    def update_linear_angular_coupling(self):
+        """Couple first-order angular content back into linear acceleration."""
+
+        self.angular_A = angular_to_linear_bridge(e_eta * self.angular_H)
+        self.linear_a = rho_q0 * self.linear_E + inv_rho * self.angular_A
+
+    def update_second_order_linear_sector(self):
+        """Update second-order linear quantities from the linear acceleration."""
+
+        self.linear_dpdt = eta * div(self.linear_a)
+        self.linear_yank = -grad(self.linear_dpdt)
+        self.linear_dEdt = inv_rho_q0 * self.linear_yank
+
+    def update_second_order_angular_sector(self):
+        """Update second-order angular quantities from the current bridge."""
+
+        self.angular_alpha = linear_to_angular_bridge(self.linear_a)
+        self.angular_dtau_dt = eta * self.angular_alpha
+        self.angular_dHdt = eta_e * self.angular_dtau_dt
+
+    def update_second_order_coupling(self):
+        """Couple second-order angular content back into linear jerk."""
+
+        self.angular_dAdt = angular_to_linear_bridge(e_eta * self.angular_dHdt)
+        self.linear_j = rho_q0 * self.linear_dEdt + inv_rho * self.angular_dAdt
+
+    def advance_linear_sector(self):
+        """Advance the primary linear state with a short Taylor step."""
+
+        self.linear_v += self.time_step * self.linear_a
+        self.linear_v += 0.5 * (self.time_step ** 2) * self.linear_j
 
 
     def updateBoundaries(self):
-        """Hook for boundary updates in the experimental aether path."""
+        """Run any pre-update boundary hooks supported by the scene."""
 
-        # update boundaries: step 1
-        #for boundary in self.boundaries:
-        #    boundary.update_phi_E()
-        #    boundary.update_phi_H()
+        for boundary in self.boundaries:
+            update_phi_E = getattr(boundary, "update_phi_E", None)
+            if update_phi_E is not None:
+                update_phi_E()
+            update_phi_H = getattr(boundary, "update_phi_H", None)
+            if update_phi_H is not None:
+                update_phi_H()
 
         return
 
 
     def updateEH(self):    
-        """Hook for source/object/detector updates of ``E``/``H``-like fields."""
-        # update objects
-        #for obj in self.objects:
-        #    obj.update_E(curl)
-        #    obj.update_H(curl)
+        """Run package-style hooks around the derived ``E`` / ``H`` fields.
+
+        Existing Maxwell-style sources and detectors can therefore still be
+        reused as comparison tools, while aether-native sources may inject into
+        ``v`` earlier in the update chain via ``update_v``.
+        """
+        for boundary in self.boundaries:
+            update_E = getattr(boundary, "update_E", None)
+            if update_E is not None:
+                update_E()
+            update_H = getattr(boundary, "update_H", None)
+            if update_H is not None:
+                update_H()
            
-        # update boundaries: step 2
-        #for boundary in self.boundaries:
-        #    boundary.update_E()
-        #    boundary.update_H()
-           
-        # add sources to grid:
-        #for src in self.sources:
-        #    src.update_E()
-        #    src.update_H()
+        for src in self.sources:
+            update_E = getattr(src, "update_E", None)
+            if update_E is not None:
+                update_E()
+            update_H = getattr(src, "update_H", None)
+            if update_H is not None:
+                update_H()
            
            
-        # detect electric field
-        #for det in self.detectors:
-        #    det.detect_E()
-        #    det.detect_H()    
+        for det in self.detectors:
+            detect_E = getattr(det, "detect_E", None)
+            if detect_E is not None:
+                detect_E()
+            detect_H = getattr(det, "detect_H", None)
+            if detect_H is not None:
+                detect_H()
 
         return
 
@@ -437,35 +483,27 @@ class AetherGrid:
 
     def reset(self):
         """reset the grid by setting all fields to zero"""
-        self.v      *= 0.0
+        self.linear_v *= 0.0
+        self.linear_p *= 0.0
+        self.linear_f *= 0.0
+        self.linear_E *= 0.0
+        self.linear_a *= 0.0
+        self.linear_dpdt *= 0.0
+        self.linear_yank *= 0.0
+        self.linear_dEdt *= 0.0
+        self.linear_j *= 0.0
 
-        self.p      *= 0.0
-        self.omega  *= 0.0
-        self.tau    *= 0.0
+        self.angular_omega *= 0.0
+        self.angular_tau *= 0.0
+        self.angular_H *= 0.0
+        self.angular_A *= 0.0
+        self.angular_alpha *= 0.0
+        self.angular_dtau_dt *= 0.0
+        self.angular_dHdt *= 0.0
+        self.angular_dAdt *= 0.0
 
-        self.f      *= 0.0
-
-        self.E      *= 0.0
-        self.H      *= 0.0
-    
-        self.A      *= 0.0
-        
-        self.a      *= 0.0
-
-        self.dpdt   *= 0.0
-        self.alpha  *= 0.0 
-        self.dtau_dt *= 0.0
-
-        self.yank   *= 0.0
-
-        self.dEdt   *= 0.0
-        self.dHdt   *= 0.0
-
-        self.dAdt   *= 0.0
-
-        self.j      *= 0.0
-        
-        self.time_steps_passed *= 0
+        self._sync_public_aliases()
+        self.time_steps_passed = 0
 
     def add_source(self, name, source):
         """add a source to the grid"""
@@ -488,8 +526,9 @@ class AetherGrid:
         self.objects[name] = obj
     
     def promote_dtypes_to_complex(self):
-        self.E = self.E.astype(bd.complex)
-        self.H = self.H.astype(bd.complex)
+        self.linear_E = self.linear_E.astype(bd.complex)
+        self.angular_H = self.angular_H.astype(bd.complex)
+        self._sync_public_aliases()
         [boundary.promote_dtypes_to_complex() for boundary in self.boundaries]
 
     def __setitem__(self, key, attr):

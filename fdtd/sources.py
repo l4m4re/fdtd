@@ -4,6 +4,8 @@ Available sources:
 
 - PointSource
 - LineSource
+- AetherPointSource
+- AetherLineSource
 
 """
 ## Imports
@@ -20,6 +22,45 @@ from .grid import Grid
 from .backend import backend as bd
 from .waveforms import *
 from .detectors import CurrentDetector
+
+
+def _sample_waveform(source):
+    """Sample the scalar waveform value for a source at the current timestep."""
+
+    q = source.grid.time_steps_passed
+    if source.pulse:
+        t1 = int(2 * pi / (source.frequency * source.hanning_dt / source.cycle))
+        if q < t1:
+            return source.amplitude * hanning(
+                source.frequency, q * source.hanning_dt, source.cycle
+            )
+        return 0.0
+    return source.amplitude * sin(2 * pi * q / source.period + source.phase_shift)
+
+
+def _resolve_aether_field(grid, field: str):
+    """Resolve legacy and explicit aether field names on a grid."""
+
+    field_aliases = {
+        "v": "linear_v",
+        "p": "linear_p",
+        "f": "linear_f",
+        "E": "linear_E",
+        "a": "linear_a",
+        "dpdt": "linear_dpdt",
+        "yank": "linear_yank",
+        "dEdt": "linear_dEdt",
+        "j": "linear_j",
+        "omega": "angular_omega",
+        "tau": "angular_tau",
+        "H": "angular_H",
+        "A": "angular_A",
+        "alpha": "angular_alpha",
+        "dtau_dt": "angular_dtau_dt",
+        "dHdt": "angular_dHdt",
+        "dAdt": "angular_dAdt",
+    }
+    return getattr(grid, field_aliases.get(field, field))
 
 ## PointSource class
 class PointSource:
@@ -91,20 +132,7 @@ class PointSource:
 
     def update_E(self):
         """Add the source to the electric field"""
-        q = self.grid.time_steps_passed
-        # if pulse
-        if self.pulse:
-            t1 = int(2 * pi / (self.frequency * self.hanning_dt / self.cycle))
-            if q < t1:
-                src = self.amplitude * hanning(
-                    self.frequency, q * self.hanning_dt, self.cycle
-                )
-            else:
-                # src = - self.grid.E[self.x, self.y, self.z, 2]
-                src = 0
-        # if not pulse
-        else:
-            src = self.amplitude * sin(2 * pi * q / self.period + self.phase_shift)
+        src = _sample_waveform(self)
         self.grid.E[self.x, self.y, self.z, 2] += src
 
     def update_H(self):
@@ -275,20 +303,7 @@ class LineSource:
 
     def update_E(self):
         """Add the source to the electric field"""
-        q = self.grid.time_steps_passed
-        # if pulse
-        if self.pulse:
-            t1 = int(2 * pi / (self.frequency * self.hanning_dt / self.cycle))
-            if q < t1:
-                vect = self.profile * hanning(
-                    self.frequency, q * self.hanning_dt, self.cycle
-                )
-            else:
-                # src = - self.grid.E[self.x, self.y, self.z, 2]
-                vect = self.profile * 0
-        # if not pulse
-        else:
-            vect = self.profile * sin(2 * pi * q / self.period + self.phase_shift)
+        vect = self.profile * _sample_waveform(self)
         # do not use list indexing here, as this is much slower especially for torch backend
         # DISABLED: self.grid.E[self.x, self.y, self.z, 2] = vect
         for x, y, z, value in zip(self.x, self.y, self.z, vect):
@@ -638,3 +653,78 @@ class SoftArbitraryPointSource:
         z = f"{self.z}"
         s += f"        @ x={x}, y={y}, z={z}\n"
         return s
+
+
+class AetherPointSource(PointSource):
+    """Native source for ``AetherGrid`` that injects into a vector field.
+
+    By default this source drives the aether velocity field ``v``. The goal is
+    to preserve the package's scene-construction API while making the theory
+    specific excitation explicit.
+    """
+
+    def __init__(
+        self,
+        period: Number = 15,
+        amplitude: float = 1.0,
+        phase_shift: float = 0.0,
+        name: str = None,
+        pulse: bool = False,
+        cycle: int = 5,
+        hanning_dt: float = 10.0,
+        field: str = "v",
+        component: int = 2,
+    ):
+        super().__init__(
+            period=period,
+            amplitude=amplitude,
+            phase_shift=phase_shift,
+            name=name,
+            pulse=pulse,
+            cycle=cycle,
+            hanning_dt=hanning_dt,
+        )
+        self.field = field
+        self.component = component
+
+    def update_v(self):
+        """Inject the source waveform into the configured aether vector field."""
+
+        target = _resolve_aether_field(self.grid, self.field)
+        target[self.x, self.y, self.z, self.component] += _sample_waveform(self)
+
+
+class AetherLineSource(LineSource):
+    """Line source for ``AetherGrid`` with the same registration style as ``LineSource``."""
+
+    def __init__(
+        self,
+        period: Number = 15,
+        amplitude: float = 1.0,
+        phase_shift: float = 0.0,
+        name: str = None,
+        pulse: bool = False,
+        cycle: int = 5,
+        hanning_dt: float = 10.0,
+        field: str = "v",
+        component: int = 2,
+    ):
+        super().__init__(
+            period=period,
+            amplitude=amplitude,
+            phase_shift=phase_shift,
+            name=name,
+            pulse=pulse,
+            cycle=cycle,
+            hanning_dt=hanning_dt,
+        )
+        self.field = field
+        self.component = component
+
+    def update_v(self):
+        """Inject the line-profile waveform into the configured aether field."""
+
+        target = _resolve_aether_field(self.grid, self.field)
+        vect = self.profile * _sample_waveform(self)
+        for x, y, z, value in zip(self.x, self.y, self.z, vect):
+            target[x, y, z, self.component] += value

@@ -1,21 +1,29 @@
-"""Discrete operator helpers for the ``fdtd`` package.
+"""Discrete operators used by the educational ``fdtd`` package.
 
-The original Maxwell solver in :mod:`fdtd.grid` uses a Yee-style staggering:
+The classic Maxwell solver uses a Yee-style staggering:
 
-- ``E``-type fields are stored on edge-like slots;
-- ``H``-type fields are stored on face-like slots;
-- ``curl_E`` maps edge-like data to face-like data;
-- ``curl_H`` maps face-like data to edge-like data.
+- ``E``-type fields live on edge-like slots;
+- ``H``-type fields live on face-like slots;
+- ``curl_E`` maps edge data to face data; and
+- ``curl_H`` maps face data to edge data.
 
-The helpers in this module keep those same discrete patterns but provide
-slightly more theory-neutral names for the experimental ``AetherGrid`` path.
-They should therefore be read as collocation-aware finite differences rather
-than as abstract continuum operators.
+The experimental aether path currently reuses the same discrete patterns with
+more neutral names:
 
-The current aether implementation is still experimental. Its long-term intent
-is to separate linear and angular sectors more clearly, but for now these
-operators remain close to the educational Maxwell discretization so that the
-scene-construction API and backend behavior stay familiar.
+- ``curl_edge_to_face`` for circulation from edge-like slots to face-like
+  slots;
+- ``curl_face_to_edge`` for the reverse map;
+- ``linear_to_angular_bridge`` for the current temporary map from the linear
+  translational sector into the angular sector;
+- ``angular_to_linear_bridge`` for the current temporary map from the angular
+  sector back into the linear sector;
+- ``apply_angular_metric`` for the meter-carrying length factor that the
+  angular sector is expected to need once its native geometry is explicit;
+- ``grad`` for cell-scalar to oriented vector differences; and
+- ``div`` for contracting vector differences back to a scalar slot.
+
+This file intentionally favors clarity over aggressive abstraction because the
+package is meant to be inspectable and educational.
 """
 
 ## Imports
@@ -28,14 +36,13 @@ from .backend import backend as bd
 
 ## Functions
 def curl_E(E: Tensorlike) -> Tensorlike:
-    """Transform an edge-like field into a face-like field via a discrete curl.
+    """Map an edge-like field to a face-like field by taking its curl.
 
     Args:
-        E: Electric field stored with the same collocation as the standard
-            ``Grid.E`` field.
+        E: Electric field sampled on the edge-like slots of the Yee grid.
 
     Returns:
-        An ``H``-type field living on the complementary face-like slots.
+        The discrete curl of ``E`` on face-like slots.
     """
     curl = bd.zeros(E.shape, dtype=E.dtype)
 
@@ -52,30 +59,24 @@ def curl_E(E: Tensorlike) -> Tensorlike:
 
 
 def curl_edge_to_face(v: Tensorlike) -> Tensorlike:
-    """Discrete curl from edge-like slots to face-like slots.
+    """Aether-oriented alias for ``curl_E``.
 
-    This is the collocation-neutral alias used by :class:`fdtd.aethergrid.AetherGrid`.
-    The stencil is identical to :func:`curl_E`.
-
-    Args:
-        v: Vector field whose components are stored on edge-like locations.
-
-    Returns:
-        A face-like vector field representing the discrete circulation of ``v``.
+    The experimental STPT implementation currently interprets a general vector
+    field ``v`` as living on edge-like slots and reuses the same discrete
+    circulation pattern as the Maxwell ``E -> H`` curl.
     """
     return curl_E(v)
 
 
 
 def curl_H(H: Tensorlike) -> Tensorlike:
-    """Transform a face-like field into an edge-like field via a discrete curl.
+    """Map a face-like field to an edge-like field by taking its curl.
 
     Args:
-        H: Magnetic field stored with the same collocation as the standard
-            ``Grid.H`` field.
+        H: Magnetic field sampled on face-like Yee slots.
 
     Returns:
-        An ``E``-type field living on the complementary edge-like slots.
+        The discrete curl of ``H`` on edge-like slots.
     """
     curl = bd.zeros(H.shape, dtype=H.dtype)
 
@@ -92,35 +93,102 @@ def curl_H(H: Tensorlike) -> Tensorlike:
 
 
 def curl_face_to_edge(A: Tensorlike) -> Tensorlike:
-    """Discrete curl from face-like slots to edge-like slots.
+    """Aether-oriented alias for ``curl_H``.
 
-    This is the collocation-neutral alias used by :class:`fdtd.aethergrid.AetherGrid`.
-    The stencil is identical to :func:`curl_H`.
-
-    Args:
-        A: Vector field whose components are stored on face-like locations.
-
-    Returns:
-        An edge-like vector field representing the discrete circulation of ``A``.
+    This is the reverse circulation map used when a face-like field such as a
+    torque or vector-potential-like quantity needs to be expressed back on
+    edge-like slots.
     """
     return curl_H(A)
 
 
-
-def div(v: Tensorlike) -> Tensorlike:
-    """Compute a discrete divergence-like contraction of a vector field.
-
-    The current ``AetherGrid`` stores its vector fields in collocated
-    ``(Nx, Ny, Nz, 3)`` arrays even though the longer-term theory likely
-    requires a clearer separation between linear and angular slots. This helper
-    therefore uses the package's current experimental convention rather than a
-    finalized STPT geometry.
+def apply_angular_metric(
+    field: Tensorlike,
+    metric_length: Tensorlike = None,
+) -> Tensorlike:
+    """Apply an angular-sector metric length to a field.
 
     Args:
-        v: Vector field with final axis of length 3.
+        field: Angular-sector field with shape ``(Nx, Ny, Nz, 3)``.
+        metric_length: Optional metric or lever-arm length with shape
+            ``(Nx, Ny, Nz, 1)`` or ``(Nx, Ny, Nz, 3)``.
 
     Returns:
-        Scalar field of shape ``(Nx, Ny, Nz, 1)``.
+        ``field`` unchanged when ``metric_length`` is ``None``; otherwise the
+        field weighted by the supplied metric length.
+
+    Notes:
+        This helper is intentionally simple. It marks where the angular sector
+        is expected to carry an extra meter-valued geometric factor without
+        prematurely fixing the final constitutive law.
+    """
+
+    if metric_length is None:
+        return field
+    return field * metric_length
+
+
+def linear_to_angular_bridge(
+    linear_field: Tensorlike,
+    metric_length: Tensorlike = None,
+) -> Tensorlike:
+    """Map the linear sector into the current temporary angular bridge.
+
+    Args:
+        linear_field: Linear translational state, currently sampled in the same
+            array layout as the educational aether prototype.
+        metric_length: Optional angular metric length used as a placeholder for
+            the meter-valued geometry expected in the native angular sector.
+
+    Returns:
+        The current bridge field on angular slots.
+
+    Notes:
+        This is still a bridge, not the final STPT angular update law. Without
+        ``metric_length`` it reproduces the legacy ``curl_edge_to_face`` path.
+    """
+
+    angular_field = curl_edge_to_face(linear_field)
+    return apply_angular_metric(angular_field, metric_length)
+
+
+def angular_to_linear_bridge(
+    angular_field: Tensorlike,
+    metric_length: Tensorlike = None,
+) -> Tensorlike:
+    """Map the angular sector back into the current temporary linear bridge.
+
+    Args:
+        angular_field: Angular-sector field on face-like slots.
+        metric_length: Optional angular metric length used as a simple weighting
+            factor in the current bridge implementation.
+
+    Returns:
+        The reverse bridge field on linear slots.
+
+    Notes:
+        This currently reuses ``curl_face_to_edge`` so the runnable prototype
+        stays compatible with the existing baseline while the native angular
+        geometry is still being derived.
+    """
+
+    weighted_angular_field = apply_angular_metric(angular_field, metric_length)
+    return curl_face_to_edge(weighted_angular_field)
+
+
+
+def div(v: Tensorlike) -> Tensorlike:
+    """Contract an edge-like vector field into a scalar difference field.
+
+    Args:
+        v: Vector field with shape ``(Nx, Ny, Nz, 3)``.
+
+    Returns:
+        Scalar field with shape ``(Nx, Ny, Nz, 1)``.
+
+    Notes:
+        The current implementation uses centered finite differences arranged to
+        stay compatible with the package's simple collocated aether prototype.
     """
     div_v = bd.zeros((v.shape[0], v.shape[1], v.shape[2], 1), dtype=v.dtype)
 
@@ -141,14 +209,14 @@ def div(v: Tensorlike) -> Tensorlike:
 
 
 def grad(p: Tensorlike) -> Tensorlike:
-    """Compute a discrete gradient-like map from scalar to vector field.
+    """Map a scalar field to oriented finite differences along each axis.
 
     Args:
-        p: Scalar field with trailing singleton axis, typically
-            ``(Nx, Ny, Nz, 1)`` in the current experimental aether path.
+        p: Scalar field with shape ``(Nx, Ny, Nz, 1)``.
 
     Returns:
-        Vector field with shape ``(Nx, Ny, Nz, 3)``.
+        Vector field with shape ``(Nx, Ny, Nz, 3)`` whose components represent
+        forward differences along ``x``, ``y``, and ``z``.
     """
     grad = bd.zeros((p.shape[0], p.shape[1], p.shape[2], 3), dtype=p.dtype)
     
