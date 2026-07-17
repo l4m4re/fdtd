@@ -40,6 +40,7 @@ from .typing_ import Tuple, Number, Tensorlike
 from .backend import backend as bd
 
 from .operators import (
+    angular_clock_eigenvalue,
     angular_to_linear_bridge,
     div,
     grad,
@@ -178,6 +179,17 @@ class AetherGrid:
         self.angular_dtau_dt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
         self.angular_dHdt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
         self.angular_dAdt = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+
+        # Native angular-clock placeholders. These are not yet coupled into
+        # the bridge dynamics; they expose the intended two-clock state for
+        # analytic benchmarks and future opt-in angular-sector work.
+        self.omega_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.omega_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.angular_gamma = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.theta_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.theta_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.angular_chi = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.angular_clock_lambda = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
 
         self._sync_public_aliases()
         
@@ -424,6 +436,30 @@ class AetherGrid:
         self.angular_dAdt = angular_to_linear_bridge(e_eta * self.angular_dHdt)
         self.linear_j = rho_q0 * self.linear_dEdt + inv_rho * self.angular_dAdt
 
+    def evaluate_angular_clock_benchmark(self, delta=None):
+        """Evaluate the native angular-clock eigenvalue benchmark.
+
+        The current aether bridge still derives ``angular_omega`` from the
+        linear state. This method is deliberately separate: it lets tests and
+        future native angular-sector experiments populate ``omega_t``,
+        ``omega_p``, and ``angular_gamma`` and evaluate the benchmark without
+        altering the timestep update or the classic Maxwell path.
+        """
+
+        if delta is None:
+            delta = self.time_step
+
+        self.theta_t = self.omega_t * delta
+        self.theta_p = self.omega_p * delta
+        self.angular_chi = self.angular_gamma * delta
+        self.angular_clock_lambda = angular_clock_eigenvalue(
+            self.omega_t,
+            self.omega_p,
+            self.angular_gamma,
+            delta,
+        )
+        return self.angular_clock_lambda
+
     def advance_linear_sector(self):
         """Advance the primary linear state with a short Taylor step."""
 
@@ -501,6 +537,13 @@ class AetherGrid:
         self.angular_dtau_dt *= 0.0
         self.angular_dHdt *= 0.0
         self.angular_dAdt *= 0.0
+        self.omega_t *= 0.0
+        self.omega_p *= 0.0
+        self.angular_gamma *= 0.0
+        self.theta_t *= 0.0
+        self.theta_p *= 0.0
+        self.angular_chi *= 0.0
+        self.angular_clock_lambda *= 0.0
 
         self._sync_public_aliases()
         self.time_steps_passed = 0

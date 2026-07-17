@@ -19,6 +19,8 @@ more neutral names:
   sector back into the linear sector;
 - ``apply_angular_metric`` for the meter-carrying length factor that the
   angular sector is expected to need once its native geometry is explicit;
+- ``angular_clock_eigenvalue`` for the native two-clock angular benchmark
+  before it is coupled into the grid state;
 - ``grad`` for cell-scalar to oriented vector differences; and
 - ``div`` for contracting vector differences back to a scalar slot.
 
@@ -126,6 +128,50 @@ def apply_angular_metric(
     if metric_length is None:
         return field
     return field * metric_length
+
+
+def angular_clock_eigenvalue(
+    omega_t: Tensorlike,
+    omega_p: Tensorlike,
+    gamma: Tensorlike,
+    delta: float,
+) -> Tensorlike:
+    """Return the finite-step native angular-clock eigenvalue benchmark.
+
+    Args:
+        omega_t: Toroidal or local "around" angular rate ``[1/s]``.
+        omega_p: Poloidal or local "through" angular rate ``[1/s]``.
+        gamma: Hyperbolic envelope, boost, or dilation rate ``[1/s]``.
+        delta: Step size used in the angular-clock finite difference.
+
+    Returns:
+        The benchmark eigenvalue
+        ``-4/delta**2*sin(delta*omega_t/2)**2
+        -4/delta**2*sin(delta*omega_p/2)**2
+        +4/delta**2*sinh(delta*gamma/2)**2``.
+
+    Notes:
+        This is a pure analytic benchmark for the future native angular sector.
+        It deliberately does not update ``AetherGrid`` state or define a charge
+        observable.
+    """
+
+    if delta == 0:
+        raise ValueError("delta must be non-zero")
+
+    omega_t = bd.asarray(omega_t)
+    omega_p = bd.asarray(omega_p)
+    gamma = bd.asarray(gamma)
+    half_delta = 0.5 * delta
+
+    sin_t = bd.sin(half_delta * omega_t)
+    sin_p = bd.sin(half_delta * omega_p)
+    sinh_h = 0.5 * (
+        bd.exp(half_delta * gamma) - bd.exp(-half_delta * gamma)
+    )
+
+    scale = 4.0 / (delta * delta)
+    return scale * (-sin_t * sin_t - sin_p * sin_p + sinh_h * sinh_h)
 
 
 def linear_to_angular_bridge(

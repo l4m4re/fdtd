@@ -3,6 +3,7 @@
 import numpy as np
 
 from fdtd.operators import (
+    angular_clock_eigenvalue,
     angular_to_linear_bridge,
     apply_angular_metric,
     curl_edge_to_face,
@@ -40,3 +41,40 @@ def test_apply_angular_metric_weights_field_componentwise():
     weighted = apply_angular_metric(field, metric_length)
 
     np.testing.assert_allclose(np.asarray(weighted), 2.5 * np.ones((2, 2, 2, 3)))
+
+
+def test_angular_clock_eigenvalue_matches_small_step_limit():
+    omega_t = np.array([1.25, 2.0, 0.5])
+    omega_p = np.array([0.75, 0.25, 1.5])
+    gamma = np.array([0.5, 1.0, 0.125])
+    delta = 1e-5
+
+    actual = angular_clock_eigenvalue(omega_t, omega_p, gamma, delta)
+    expected = -(omega_t**2) - (omega_p**2) + gamma**2
+
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=1e-10, atol=1e-10)
+
+
+def test_angular_clock_eigenvalue_uses_exact_finite_step_formula():
+    omega_t = 1.2
+    omega_p = 0.8
+    gamma = 0.4
+    delta = 0.25
+
+    actual = angular_clock_eigenvalue(omega_t, omega_p, gamma, delta)
+    expected = (
+        -4.0 / delta**2 * np.sin(delta * omega_t / 2.0) ** 2
+        -4.0 / delta**2 * np.sin(delta * omega_p / 2.0) ** 2
+        +4.0 / delta**2 * np.sinh(delta * gamma / 2.0) ** 2
+    )
+
+    np.testing.assert_allclose(np.asarray(actual), expected)
+
+
+def test_angular_clock_eigenvalue_rejects_zero_step():
+    try:
+        angular_clock_eigenvalue(1.0, 1.0, 1.0, 0.0)
+    except ValueError as exc:
+        assert "delta" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for zero delta")

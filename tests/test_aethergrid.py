@@ -38,6 +38,45 @@ def test_aethergrid_exposes_split_sector_aliases():
     assert grid.angular_grid_spacing == grid.grid_spacing
     assert grid.angular_metric_length.shape == (5, 5, 5, 1)
     assert np.all(np.asarray(grid.angular_metric_length) == grid.angular_grid_spacing)
+    assert grid.omega_t.shape == (5, 5, 5, 1)
+    assert grid.omega_p.shape == (5, 5, 5, 1)
+    assert grid.angular_gamma.shape == (5, 5, 5, 1)
+    assert grid.angular_clock_lambda.shape == (5, 5, 5, 1)
+
+
+def test_aethergrid_evaluates_native_angular_clock_benchmark():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    delta = 0.2
+    grid.omega_t[1, 1, 1, 0] = 1.2
+    grid.omega_p[1, 1, 1, 0] = 0.8
+    grid.angular_gamma[1, 1, 1, 0] = 0.4
+
+    result = grid.evaluate_angular_clock_benchmark(delta=delta)
+
+    expected = (
+        -4.0 / delta**2 * np.sin(delta * 1.2 / 2.0) ** 2
+        -4.0 / delta**2 * np.sin(delta * 0.8 / 2.0) ** 2
+        +4.0 / delta**2 * np.sinh(delta * 0.4 / 2.0) ** 2
+    )
+    assert float(result[1, 1, 1, 0]) == np.asarray(
+        grid.angular_clock_lambda
+    )[1, 1, 1, 0]
+    np.testing.assert_allclose(float(result[1, 1, 1, 0]), expected)
+    np.testing.assert_allclose(float(grid.theta_t[1, 1, 1, 0]), 1.2 * delta)
+    np.testing.assert_allclose(float(grid.theta_p[1, 1, 1, 0]), 0.8 * delta)
+    np.testing.assert_allclose(float(grid.angular_chi[1, 1, 1, 0]), 0.4 * delta)
+
+
+def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
+    grid = fdtd.AetherGrid(shape=(5, 5, 5))
+    grid[2, 2, 2] = fdtd.AetherPointSource(amplitude=1.0, phase_shift=pi / 2)
+
+    grid.step()
+
+    assert np.any(np.asarray(grid.angular_omega) != 0.0)
+    assert not np.any(np.asarray(grid.omega_t))
+    assert not np.any(np.asarray(grid.omega_p))
+    assert not np.any(np.asarray(grid.angular_gamma))
 
 
 def test_aether_point_source_injects_native_velocity():
