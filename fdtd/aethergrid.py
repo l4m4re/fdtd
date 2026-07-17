@@ -465,8 +465,9 @@ class AetherGrid:
         The current aether bridge still derives ``angular_omega`` from the
         linear state. This method is deliberately separate: it lets tests and
         future native angular-sector experiments populate ``omega_t``,
-        ``omega_p``, and ``angular_gamma`` and evaluate the benchmark without
-        altering the timestep update or the classic Maxwell path.
+        ``omega_p``, and an independent ``angular_gamma`` benchmark channel
+        and evaluate the benchmark without altering the timestep update or the
+        classic Maxwell path.
         """
 
         if delta is None:

@@ -71,6 +71,31 @@ def test_angular_clock_eigenvalue_uses_exact_finite_step_formula():
     np.testing.assert_allclose(np.asarray(actual), expected)
 
 
+def test_angular_clock_eigenvalue_treats_gamma_as_independent_channel():
+    delta = 0.25
+
+    actual = angular_clock_eigenvalue(omega_t=0.0, omega_p=0.0, gamma=0.4, delta=delta)
+    expected = 4.0 / delta**2 * np.sinh(delta * 0.4 / 2.0) ** 2
+
+    np.testing.assert_allclose(np.asarray(actual), expected)
+
+
+def test_angular_clock_eigenvalue_converges_to_small_step_limit():
+    omega_t = 1.2
+    omega_p = 0.9
+    gamma = 0.35
+    expected = -(omega_t**2) - (omega_p**2) + gamma**2
+
+    coarse = float(angular_clock_eigenvalue(omega_t, omega_p, gamma, delta=0.1))
+    fine = float(angular_clock_eigenvalue(omega_t, omega_p, gamma, delta=0.05))
+
+    coarse_error = abs(coarse - expected)
+    fine_error = abs(fine - expected)
+
+    assert fine_error < coarse_error
+    assert fine_error / coarse_error < 0.3
+
+
 def test_angular_clock_eigenvalue_rejects_zero_step():
     try:
         angular_clock_eigenvalue(1.0, 1.0, 1.0, 0.0)

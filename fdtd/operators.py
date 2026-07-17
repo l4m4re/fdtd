@@ -141,7 +141,9 @@ def angular_clock_eigenvalue(
     Args:
         omega_t: Toroidal or local "around" angular rate ``[1/s]``.
         omega_p: Poloidal or local "through" angular rate ``[1/s]``.
-        gamma: Hyperbolic envelope, boost, or dilation rate ``[1/s]``.
+        gamma: Independent hyperbolic envelope, boost, or dilation rate
+            ``[1/s]`` for the current benchmark. It is not derived from
+            ``omega_t`` and ``omega_p`` by this helper.
         delta: Step size used in the angular-clock finite difference.
 
     Returns:
@@ -152,8 +154,8 @@ def angular_clock_eigenvalue(
 
     Notes:
         This is a pure analytic benchmark for the future native angular sector.
-        It deliberately does not update ``AetherGrid`` state or define a charge
-        observable.
+        It deliberately does not update ``AetherGrid`` state, infer ``gamma``
+        from the two angular clocks, or define a charge observable.
     """
 
     if delta == 0:
