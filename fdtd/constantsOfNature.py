@@ -1,3 +1,13 @@
+"""Legacy STPT constants and derivation scratchpad.
+
+This module is provenance for Stowe/STPT constant experiments, not a stable
+public constants API for the `fdtd` package. Treat the formulas below as
+historical calculations or candidate consistency checks unless a caller states
+which measured quantities are independent inputs and which quantities are
+predictions. Current canonical guidance lives in the theory notes under
+`Theory/`, especially the fine-structure and simulation-guide documents.
+"""
+
 from math import *
 
 # some constants

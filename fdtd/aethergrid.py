@@ -208,6 +208,11 @@ class AetherGrid:
         )
         self.angular_inertia_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.angular_inertia_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.angular_momentum_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.angular_momentum_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.angular_torque_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.angular_torque_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_tau = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
 
         self._sync_public_aliases()
         
@@ -501,6 +506,91 @@ class AetherGrid:
         self.angular_inertia_p = density * self.ell_p * self.ell_p
         return self.angular_inertia_t, self.angular_inertia_p
 
+    def update_native_angular_momentum(self):
+        """Populate passive native angular momentum placeholders.
+
+        Returns:
+            ``(angular_momentum_t, angular_momentum_p)``.
+
+        Notes:
+            The provisional closure is ``L = I * omega`` on the two native
+            angular clocks. It is intentionally not a torque law; torque would
+            require a time update or flux law for this momentum state.
+        """
+
+        self.angular_momentum_t = self.angular_inertia_t * self.omega_t
+        self.angular_momentum_p = self.angular_inertia_p * self.omega_p
+        return self.angular_momentum_t, self.angular_momentum_p
+
+    def update_native_angular_torque(
+        self,
+        previous_momentum_t=None,
+        previous_momentum_p=None,
+        delta=None,
+    ):
+        """Populate passive native torque placeholders from momentum changes.
+
+        Args:
+            previous_momentum_t: Previous toroidal angular momentum state.
+                Defaults to zero.
+            previous_momentum_p: Previous poloidal angular momentum state.
+                Defaults to zero.
+            delta: Time interval for the finite difference. Defaults to the
+                grid timestep.
+
+        Returns:
+            ``(angular_torque_t, angular_torque_p)``.
+
+        Notes:
+            This is the time-update interpretation of native torque,
+            ``tau = dL/dt``. It is not yet a spatial flux law or a coupling law
+            back into the linear branch.
+        """
+
+        if delta is None:
+            delta = self.time_step
+        if delta == 0:
+            raise ValueError("delta must be non-zero")
+
+        if previous_momentum_t is None:
+            previous_momentum_t = bd.zeros_like(self.angular_momentum_t)
+        else:
+            previous_momentum_t = bd.asarray(previous_momentum_t)
+        if previous_momentum_p is None:
+            previous_momentum_p = bd.zeros_like(self.angular_momentum_p)
+        else:
+            previous_momentum_p = bd.asarray(previous_momentum_p)
+
+        self.angular_torque_t = (
+            self.angular_momentum_t - previous_momentum_t
+        ) / delta
+        self.angular_torque_p = (
+            self.angular_momentum_p - previous_momentum_p
+        ) / delta
+        return self.angular_torque_t, self.angular_torque_p
+
+    def project_native_angular_torque(self):
+        """Project the two native torque channels onto the local angular frame.
+
+        Returns:
+            A vector field ``native_angular_tau`` with shape ``(Nx, Ny, Nz, 3)``.
+
+        Notes:
+            This is only a projection from native scalar channels to the host
+            vector layout:
+
+            ``tau_native = tau_t * e_t + tau_p * e_p``.
+
+            It does not replace the existing bridge ``angular_tau`` and does
+            not couple torque back into the linear branch.
+        """
+
+        self.native_angular_tau = (
+            self.angular_torque_t * self.angular_e_t
+            + self.angular_torque_p * self.angular_e_p
+        )
+        return self.native_angular_tau
+
     def advance_linear_sector(self):
         """Advance the primary linear state with a short Taylor step."""
 
@@ -585,6 +675,11 @@ class AetherGrid:
         self.theta_p *= 0.0
         self.angular_chi *= 0.0
         self.angular_clock_lambda *= 0.0
+        self.angular_momentum_t *= 0.0
+        self.angular_momentum_p *= 0.0
+        self.angular_torque_t *= 0.0
+        self.angular_torque_p *= 0.0
+        self.native_angular_tau *= 0.0
 
         self._sync_public_aliases()
         self.time_steps_passed = 0
