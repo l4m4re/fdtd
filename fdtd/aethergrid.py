@@ -191,6 +191,24 @@ class AetherGrid:
         self.angular_chi = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.angular_clock_lambda = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
 
+        # Native angular geometry placeholders. The default local angular
+        # frame uses x/y host-grid axes as a neutral basis until a true
+        # cell-local orientation update is derived.
+        self.angular_e_t = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_e_p = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.angular_e_t[:, :, :, 0] = 1.0
+        self.angular_e_p[:, :, :, 1] = 1.0
+        self.ell_t = (
+            bd.ones((self.Nx, self.Ny, self.Nz, 1), dtype=bd.float)
+            * self.angular_grid_spacing
+        )
+        self.ell_p = (
+            bd.ones((self.Nx, self.Ny, self.Nz, 1), dtype=bd.float)
+            * self.angular_grid_spacing
+        )
+        self.angular_inertia_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.angular_inertia_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+
         self._sync_public_aliases()
         
         # save the inverse of the relative permittiviy and the relative permeability

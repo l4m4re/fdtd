@@ -42,6 +42,25 @@ def test_aethergrid_exposes_split_sector_aliases():
     assert grid.omega_p.shape == (5, 5, 5, 1)
     assert grid.angular_gamma.shape == (5, 5, 5, 1)
     assert grid.angular_clock_lambda.shape == (5, 5, 5, 1)
+    assert grid.angular_e_t.shape == (5, 5, 5, 3)
+    assert grid.angular_e_p.shape == (5, 5, 5, 3)
+    assert grid.ell_t.shape == (5, 5, 5, 1)
+    assert grid.ell_p.shape == (5, 5, 5, 1)
+    assert grid.angular_inertia_t.shape == (5, 5, 5, 1)
+    assert grid.angular_inertia_p.shape == (5, 5, 5, 1)
+
+
+def test_aethergrid_exposes_default_native_angular_geometry():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+
+    np.testing.assert_allclose(np.asarray(grid.angular_e_t[..., 0]), 1.0)
+    np.testing.assert_allclose(np.asarray(grid.angular_e_t[..., 1:]), 0.0)
+    np.testing.assert_allclose(np.asarray(grid.angular_e_p[..., 1]), 1.0)
+    np.testing.assert_allclose(np.asarray(grid.angular_e_p[..., (0, 2)]), 0.0)
+    np.testing.assert_allclose(np.asarray(grid.ell_t), grid.angular_grid_spacing)
+    np.testing.assert_allclose(np.asarray(grid.ell_p), grid.angular_grid_spacing)
+    assert not np.any(np.asarray(grid.angular_inertia_t))
+    assert not np.any(np.asarray(grid.angular_inertia_p))
 
 
 def test_aethergrid_evaluates_native_angular_clock_benchmark():
@@ -77,6 +96,25 @@ def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
     assert not np.any(np.asarray(grid.omega_t))
     assert not np.any(np.asarray(grid.omega_p))
     assert not np.any(np.asarray(grid.angular_gamma))
+
+
+def test_aethergrid_reset_preserves_native_angular_geometry():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    grid.ell_t[1, 1, 1, 0] = 2.0
+    grid.ell_p[1, 1, 1, 0] = 3.0
+    grid.angular_inertia_t[1, 1, 1, 0] = 4.0
+    grid.angular_inertia_p[1, 1, 1, 0] = 5.0
+    grid.omega_t[1, 1, 1, 0] = 1.0
+    grid.evaluate_angular_clock_benchmark(delta=0.2)
+
+    grid.reset()
+
+    assert float(grid.ell_t[1, 1, 1, 0]) == 2.0
+    assert float(grid.ell_p[1, 1, 1, 0]) == 3.0
+    assert float(grid.angular_inertia_t[1, 1, 1, 0]) == 4.0
+    assert float(grid.angular_inertia_p[1, 1, 1, 0]) == 5.0
+    assert not np.any(np.asarray(grid.omega_t))
+    assert not np.any(np.asarray(grid.angular_clock_lambda))
 
 
 def test_aether_point_source_injects_native_velocity():
