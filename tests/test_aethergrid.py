@@ -86,6 +86,32 @@ def test_aethergrid_evaluates_native_angular_clock_benchmark():
     np.testing.assert_allclose(float(grid.angular_chi[1, 1, 1, 0]), 0.4 * delta)
 
 
+def test_aethergrid_updates_native_angular_inertia_from_metric_lengths():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    density = 2.0
+    grid.ell_t[1, 1, 1, 0] = 3.0
+    grid.ell_p[1, 1, 1, 0] = 4.0
+
+    inertia_t, inertia_p = grid.update_native_angular_inertia(density=density)
+
+    assert float(inertia_t[1, 1, 1, 0]) == 18.0
+    assert float(inertia_p[1, 1, 1, 0]) == 32.0
+    assert float(grid.angular_inertia_t[1, 1, 1, 0]) == 18.0
+    assert float(grid.angular_inertia_p[1, 1, 1, 0]) == 32.0
+
+
+def test_aethergrid_native_angular_inertia_accepts_density_field():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+    density = np.ones((2, 2, 2, 1)) * 3.0
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 5.0
+
+    inertia_t, inertia_p = grid.update_native_angular_inertia(density=density)
+
+    np.testing.assert_allclose(np.asarray(inertia_t), 12.0)
+    np.testing.assert_allclose(np.asarray(inertia_p), 75.0)
+
+
 def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
     grid = fdtd.AetherGrid(shape=(5, 5, 5))
     grid[2, 2, 2] = fdtd.AetherPointSource(amplitude=1.0, phase_shift=pi / 2)
@@ -96,6 +122,8 @@ def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
     assert not np.any(np.asarray(grid.omega_t))
     assert not np.any(np.asarray(grid.omega_p))
     assert not np.any(np.asarray(grid.angular_gamma))
+    assert not np.any(np.asarray(grid.angular_inertia_t))
+    assert not np.any(np.asarray(grid.angular_inertia_p))
 
 
 def test_aethergrid_reset_preserves_native_angular_geometry():

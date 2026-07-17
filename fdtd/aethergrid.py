@@ -478,6 +478,29 @@ class AetherGrid:
         )
         return self.angular_clock_lambda
 
+    def update_native_angular_inertia(self, density=None):
+        """Populate the passive native angular inertia placeholders.
+
+        Args:
+            density: Optional scalar or array-like mass density ``[kg/m^3]``.
+                Defaults to the package-level reference density used by the
+                current aether bridge.
+
+        Returns:
+            ``(angular_inertia_t, angular_inertia_p)``.
+
+        Notes:
+            The provisional closure is ``I = rho * ell**2``. Its units are
+            ``[kg/m]`` for a per-volume moment-density style quantity. This
+            gives the angular metric lengths a testable constitutive meaning
+            without coupling them into the timestep update yet.
+        """
+
+        density = rho if density is None else bd.asarray(density)
+        self.angular_inertia_t = density * self.ell_t * self.ell_t
+        self.angular_inertia_p = density * self.ell_p * self.ell_p
+        return self.angular_inertia_t, self.angular_inertia_p
+
     def advance_linear_sector(self):
         """Advance the primary linear state with a short Taylor step."""
 
