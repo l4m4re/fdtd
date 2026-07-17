@@ -5,6 +5,7 @@ from math import pi
 import numpy as np
 
 import fdtd
+from fdtd.operators import div
 
 
 def test_aethergrid_is_exported():
@@ -53,6 +54,7 @@ def test_aethergrid_exposes_split_sector_aliases():
     assert grid.angular_torque_t.shape == (5, 5, 5, 1)
     assert grid.angular_torque_p.shape == (5, 5, 5, 1)
     assert grid.native_angular_tau.shape == (5, 5, 5, 3)
+    assert grid.native_angular_tau_divergence.shape == (5, 5, 5, 1)
 
 
 def test_aethergrid_exposes_default_native_angular_geometry():
@@ -71,6 +73,7 @@ def test_aethergrid_exposes_default_native_angular_geometry():
     assert not np.any(np.asarray(grid.angular_torque_t))
     assert not np.any(np.asarray(grid.angular_torque_p))
     assert not np.any(np.asarray(grid.native_angular_tau))
+    assert not np.any(np.asarray(grid.native_angular_tau_divergence))
 
 
 def test_aethergrid_evaluates_native_angular_clock_benchmark():
@@ -204,6 +207,22 @@ def test_aethergrid_projects_native_angular_torque_with_custom_frame():
     np.testing.assert_allclose(np.asarray(projected[0, 0, 0]), [3.0, 0.0, 2.0])
 
 
+def test_aethergrid_evaluates_native_angular_torque_divergence():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+
+    diagnostic = grid.evaluate_native_angular_torque_divergence()
+
+    np.testing.assert_allclose(
+        np.asarray(diagnostic),
+        np.asarray(div(grid.native_angular_tau)),
+    )
+    assert diagnostic is grid.native_angular_tau_divergence
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
 def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
     grid = fdtd.AetherGrid(shape=(5, 5, 5))
     grid[2, 2, 2] = fdtd.AetherPointSource(amplitude=1.0, phase_shift=pi / 2)
@@ -221,6 +240,7 @@ def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
     assert not np.any(np.asarray(grid.angular_torque_t))
     assert not np.any(np.asarray(grid.angular_torque_p))
     assert not np.any(np.asarray(grid.native_angular_tau))
+    assert not np.any(np.asarray(grid.native_angular_tau_divergence))
 
 
 def test_aethergrid_reset_preserves_native_angular_geometry():
@@ -234,6 +254,7 @@ def test_aethergrid_reset_preserves_native_angular_geometry():
     grid.update_native_angular_momentum()
     grid.update_native_angular_torque(delta=0.2)
     grid.project_native_angular_torque()
+    grid.evaluate_native_angular_torque_divergence()
 
     grid.reset()
 
@@ -248,6 +269,7 @@ def test_aethergrid_reset_preserves_native_angular_geometry():
     assert not np.any(np.asarray(grid.angular_torque_t))
     assert not np.any(np.asarray(grid.angular_torque_p))
     assert not np.any(np.asarray(grid.native_angular_tau))
+    assert not np.any(np.asarray(grid.native_angular_tau_divergence))
 
 
 def test_aether_point_source_injects_native_velocity():

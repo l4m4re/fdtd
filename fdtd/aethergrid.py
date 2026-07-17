@@ -213,6 +213,7 @@ class AetherGrid:
         self.angular_torque_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.angular_torque_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.native_angular_tau = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.native_angular_tau_divergence = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
 
         self._sync_public_aliases()
         
@@ -592,6 +593,23 @@ class AetherGrid:
         )
         return self.native_angular_tau
 
+    def evaluate_native_angular_torque_divergence(self):
+        """Evaluate a passive spatial diagnostic for native angular torque.
+
+        Returns:
+            Scalar field ``native_angular_tau_divergence`` with shape
+            ``(Nx, Ny, Nz, 1)``.
+
+        Notes:
+            This contracts the already projected ``native_angular_tau`` field
+            with the current bridge ``div`` operator. It is a diagnostic for
+            spatial imbalance in the staged native torque field, not a torque
+            flux law, angular update, or feedback term into ``linear_a``.
+        """
+
+        self.native_angular_tau_divergence = div(self.native_angular_tau)
+        return self.native_angular_tau_divergence
+
     def advance_linear_sector(self):
         """Advance the primary linear state with a short Taylor step."""
 
@@ -681,6 +699,7 @@ class AetherGrid:
         self.angular_torque_t *= 0.0
         self.angular_torque_p *= 0.0
         self.native_angular_tau *= 0.0
+        self.native_angular_tau_divergence *= 0.0
 
         self._sync_public_aliases()
         self.time_steps_passed = 0
