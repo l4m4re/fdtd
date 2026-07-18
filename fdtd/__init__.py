@@ -14,7 +14,7 @@ from .sources import (
 )
 from .detectors import LineDetector, BlockDetector, CurrentDetector
 from .objects import Object, AbsorbingObject, AnisotropicObject
-from .boundaries import PeriodicBoundary, PML
+from .boundaries import PeriodicBoundary, PML, AetherAngularSpongeBoundary
 from .backend import backend
 from .backend import set_backend
 from .fourier import FrequencyRoutines

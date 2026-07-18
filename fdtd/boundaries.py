@@ -4,6 +4,7 @@ Available Boundaries:
 
  - PeriodicBoundary
  - PML
+ - AetherAngularSpongeBoundary
 
 """
 ## Imports
@@ -137,6 +138,45 @@ class Boundary:
         if s[-1] == ":":
             s = s[:-1]
         return s + "\n"
+
+
+class AetherAngularSpongeBoundary(Boundary):
+    """Passive native-angular sponge exchange for ``AetherGrid`` diagnostics.
+
+    This boundary does not update Maxwell ``E`` / ``H`` fields and is not
+    called by ``AetherGrid.step()``. It only exposes
+    ``native_angular_source_terms()`` for
+    ``AetherGrid.collect_native_angular_source_terms()``.
+    """
+
+    def __init__(
+        self,
+        damping_t: float = 0.0,
+        damping_p: float = 0.0,
+        name: str = None,
+    ):
+        super().__init__(name=name)
+        self.damping_t = float(damping_t)
+        self.damping_p = float(damping_p)
+
+    def native_angular_source_terms(self):
+        """Return explicit native-angular damping exchange arrays."""
+
+        source_t = bd.zeros_like(self.grid.angular_torque_t)
+        source_p = bd.zeros_like(self.grid.angular_torque_p)
+        source_t[self.x, self.y, self.z, :] = (
+            -self.damping_t * self.grid.angular_momentum_t[self.x, self.y, self.z, :]
+        )
+        source_p[self.x, self.y, self.z, :] = (
+            -self.damping_p * self.grid.angular_momentum_p[self.x, self.y, self.z, :]
+        )
+        return source_t, source_p
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(damping_t={self.damping_t}, "
+            f"damping_p={self.damping_p}, name={repr(self.name)})"
+        )
 
 
 ## Periodic Boundaries

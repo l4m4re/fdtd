@@ -156,6 +156,12 @@ uses explicit boundary-layer damping masks in the source arrays so only masked
 candidate momentum cells decay. It still does not call boundary hooks or define
 absorbing or reflective boundary physics.
 
+The first opt-in boundary hook is ``AetherAngularSpongeBoundary``. It exposes
+``native_angular_source_terms()`` and contributes ``-damping*L`` exchange terms
+on its registered grid slice when callers explicitly collect native angular
+source terms. It is a passive damping hook, not a Maxwell PML, absorber, or
+reflector.
+
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.
 ``collect_native_angular_source_terms()`` sums those explicit terms into
