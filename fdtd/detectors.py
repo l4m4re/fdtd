@@ -3,6 +3,9 @@
 Available Detectors:
 
  - LineDetector
+ - BlockDetector
+ - CurrentDetector
+ - AetherNativeAngularDetector
 
 """
 
@@ -278,6 +281,149 @@ class BlockDetector:
     def detector_values(self):
         """ outputs what detector detects """
         return {"E": self.E, "H": self.H}
+
+
+class AetherNativeAngularDetector:
+    """Block detector for opt-in native-angular ``AetherGrid`` observables."""
+
+    default_fields = (
+        "angular_momentum_t",
+        "angular_momentum_p",
+        "omega_t",
+        "omega_p",
+        "native_angular_source_t",
+        "native_angular_source_p",
+        "native_angular_transport_power_t",
+        "native_angular_transport_power_p",
+    )
+
+    def __init__(self, name=None, fields=None, record_energy=False):
+        """Create a native-angular detector.
+
+        Args:
+            name: name of the detector.
+            fields: optional iterable of grid field names to sample.
+            record_energy: if true, also record local ``0.5*L**2/I`` energy
+                diagnostics. Positive native inertia is required.
+        """
+
+        self.grid = None
+        self.name = name
+        self.fields = tuple(self.default_fields if fields is None else fields)
+        self.record_energy = bool(record_energy)
+        self.readings = {field: [] for field in self.fields}
+        self.energy_t = []
+        self.energy_p = []
+        self.energy = []
+
+    def _register_grid(
+        self, grid: Grid, x: ListOrSlice, y: ListOrSlice, z: ListOrSlice
+    ):
+        """Register the detector on the block selected by ``grid[...]``."""
+
+        self.grid = grid
+        self.grid.detectors.append(self)
+        if self.name is not None:
+            if not hasattr(grid, self.name):
+                setattr(grid, self.name, self)
+            else:
+                raise ValueError(
+                    f"The grid already has an attribute with name {self.name}"
+                )
+
+        self.x, self.y, self.z = self._handle_slices(x, y, z)
+
+    def _handle_slices(
+        self, x: ListOrSlice, y: ListOrSlice, z: ListOrSlice
+    ) -> Tuple[List, List, List]:
+        """Convert slices in the grid to block index lists."""
+
+        if isinstance(x, list) and isinstance(y, list) and isinstance(z, list):
+            if len(x) != len(y) or len(y) != len(z) or len(z) != len(x):
+                raise IndexError(
+                    "detectors require grid to be indexed with slices or "
+                    "equal length list-indices"
+                )
+            return x, y, z
+
+        if isinstance(x, list):
+            x = slice(x[0], x[-1], None)
+        if isinstance(y, list):
+            y = slice(y[0], y[-1], None)
+        if isinstance(z, list):
+            z = slice(z[0], z[-1], None)
+
+        x0 = x.start if x.start is not None else 0
+        y0 = y.start if y.start is not None else 0
+        z0 = z.start if z.start is not None else 0
+        x1 = x.stop if x.stop is not None else self.grid.Nx
+        y1 = y.stop if y.stop is not None else self.grid.Ny
+        z1 = z.stop if z.stop is not None else self.grid.Nz
+
+        x = [v.item() for v in bd.arange(x0, x1 + 1)]
+        y = [v.item() for v in bd.arange(y0, y1 + 1)]
+        z = [v.item() for v in bd.arange(z0, z1 + 1)]
+        return x, y, z
+
+    def _sample_field(self, field):
+        sample = []
+        for row in self.x:
+            plane = []
+            for col in self.y:
+                line = []
+                for pillar in self.z:
+                    line.append(bd.array(field[row, col, [pillar]][0]))
+                plane.append(line)
+            sample.append(plane)
+        return sample
+
+    def detect_native_angular(self):
+        """Record selected native-angular fields from the current grid state."""
+
+        for field_name in self.fields:
+            field = getattr(self.grid, field_name)
+            self.readings[field_name].append(self._sample_field(field))
+
+        if self.record_energy:
+            momentum_t = bd.asarray(self._sample_field(self.grid.angular_momentum_t))
+            momentum_p = bd.asarray(self._sample_field(self.grid.angular_momentum_p))
+            inertia_t = bd.asarray(self._sample_field(self.grid.angular_inertia_t))
+            inertia_p = bd.asarray(self._sample_field(self.grid.angular_inertia_p))
+            if bd.max(inertia_t <= 0) or bd.max(inertia_p <= 0):
+                raise ValueError("native angular inertia must be positive")
+            energy_t = 0.5 * momentum_t * momentum_t / inertia_t
+            energy_p = 0.5 * momentum_p * momentum_p / inertia_p
+            self.energy_t.append(energy_t)
+            self.energy_p.append(energy_p)
+            self.energy.append(bd.sum(energy_t + energy_p))
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(name={repr(self.name)}, "
+            f"record_energy={self.record_energy})"
+        )
+
+    def __str__(self):
+        s = "    " + repr(self) + "\n"
+        x = f"[{self.x[0]}, ... , {self.x[-1]}]"
+        y = f"[{self.y[0]}, ... , {self.y[-1]}]"
+        z = f"[{self.z[0]}, ... , {self.z[-1]}]"
+        s += f"        @ x={x}, y={y}, z={z}\n"
+        return s
+
+    def detector_values(self):
+        """Return native-angular detector readings."""
+
+        values = dict(self.readings)
+        if self.record_energy:
+            values.update(
+                {
+                    "native_angular_energy_t": self.energy_t,
+                    "native_angular_energy_p": self.energy_p,
+                    "native_angular_energy": self.energy,
+                }
+            )
+        return values
 
 
 ## CurrentDetector

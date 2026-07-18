@@ -6,6 +6,7 @@ Available sources:
 - LineSource
 - AetherPointSource
 - AetherLineSource
+- AetherNativeAngularPointSource
 
 """
 ## Imports
@@ -728,3 +729,73 @@ class AetherLineSource(LineSource):
         vect = self.profile * _sample_waveform(self)
         for x, y, z, value in zip(self.x, self.y, self.z, vect):
             target[x, y, z, self.component] += value
+
+
+class AetherNativeAngularPointSource(PointSource):
+    """Point source for opt-in native-angular transport experiments.
+
+    The source exposes ``native_angular_source_terms()`` instead of mutating
+    fields directly. ``AetherGrid`` collects it only when native angular
+    transport and source collection are enabled.
+    """
+
+    def __init__(
+        self,
+        period: Number = 15,
+        amplitude_t: float = 0.0,
+        amplitude_p: float = 0.0,
+        phase_shift: float = 0.0,
+        name: str = None,
+        pulse: bool = False,
+        cycle: int = 5,
+        hanning_dt: float = 10.0,
+    ):
+        amplitude = 1.0
+        if amplitude_t != 0.0:
+            amplitude = amplitude_t
+        elif amplitude_p != 0.0:
+            amplitude = amplitude_p
+        super().__init__(
+            period=period,
+            amplitude=amplitude,
+            phase_shift=phase_shift,
+            name=name,
+            pulse=pulse,
+            cycle=cycle,
+            hanning_dt=hanning_dt,
+        )
+        self.amplitude_t = float(amplitude_t)
+        self.amplitude_p = float(amplitude_p)
+
+    def _sample_channel(self, amplitude):
+        original = self.amplitude
+        self.amplitude = amplitude
+        value = _sample_waveform(self)
+        self.amplitude = original
+        return value
+
+    def native_angular_source_terms(self):
+        """Return explicit native-angular source arrays at the source point."""
+
+        source_t = bd.zeros_like(self.grid.angular_torque_t)
+        source_p = bd.zeros_like(self.grid.angular_torque_p)
+        source_t[self.x, self.y, self.z, 0] = self._sample_channel(
+            self.amplitude_t
+        )
+        source_p[self.x, self.y, self.z, 0] = self._sample_channel(
+            self.amplitude_p
+        )
+        return source_t, source_p
+
+    def update_E(self):
+        """Do not inject into Maxwell-style electric fields."""
+
+    def update_H(self):
+        """Do not inject into Maxwell-style magnetic fields."""
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(period={self.period}, "
+            f"amplitude_t={self.amplitude_t}, amplitude_p={self.amplitude_p}, "
+            f"phase_shift={self.phase_shift}, name={repr(self.name)})"
+        )

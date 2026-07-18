@@ -11,8 +11,14 @@ from .sources import (
     PlaneSource,
     AetherPointSource,
     AetherLineSource,
+    AetherNativeAngularPointSource,
 )
-from .detectors import LineDetector, BlockDetector, CurrentDetector
+from .detectors import (
+    LineDetector,
+    BlockDetector,
+    CurrentDetector,
+    AetherNativeAngularDetector,
+)
 from .objects import Object, AbsorbingObject, AnisotropicObject
 from .boundaries import (
     PeriodicBoundary,
@@ -20,6 +26,8 @@ from .boundaries import (
     AetherAngularSpongeBoundary,
     AetherAngularNoExchangeBoundary,
     AetherAngularReflectiveBoundary,
+    AetherAngularMatchedFluxBoundary,
+    AetherAngularDirectMatchedFluxBoundary,
 )
 from .backend import backend
 from .backend import set_backend

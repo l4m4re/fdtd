@@ -7,6 +7,8 @@ Available Boundaries:
  - AetherAngularSpongeBoundary
  - AetherAngularNoExchangeBoundary
  - AetherAngularReflectiveBoundary
+ - AetherAngularMatchedFluxBoundary
+ - AetherAngularDirectMatchedFluxBoundary
 
 """
 ## Imports
@@ -142,14 +144,46 @@ class Boundary:
         return s + "\n"
 
 
+def _aether_boundary_face_label(boundary):
+    """Return the single outer face axis/side for a native-angular boundary."""
+
+    axes = (("x", boundary.x), ("y", boundary.y), ("z", boundary.z))
+    outer_faces = [
+        (axis, "low" if value == 0 else "high")
+        for axis, value in axes
+        if isinstance(value, int) and value in (0, -1)
+    ]
+    indexed_non_normal_axes = [
+        axis
+        for axis, value in axes
+        if isinstance(value, int) and value not in (0, -1)
+    ]
+    if len(outer_faces) != 1 or indexed_non_normal_axes:
+        raise ValueError(
+            "native angular boundaries with face metadata must be placed on "
+            "a single outer grid face"
+        )
+    return outer_faces[0]
+
+
+def _aether_boundary_face_metadata(boundary):
+    """Return outer-face metadata and a full field slice."""
+
+    axis, side = _aether_boundary_face_label(boundary)
+    axis_index = {"x": 0, "y": 1, "z": 2}[axis]
+    normal_sign = -1.0 if side == "low" else 1.0
+    face = [boundary.x, boundary.y, boundary.z, slice(None)]
+    return axis, side, axis_index, normal_sign, tuple(face)
+
+
 class AetherAngularSpongeBoundary(Boundary):
     """Passive native-angular sponge exchange for ``AetherGrid`` diagnostics.
 
     This boundary does not update Maxwell ``E`` / ``H`` fields, native angular
-    clocks, momentum, torque, residuals, or candidates, and is not called by
-    ``AetherGrid.step()``. It only exposes
+    clocks, momentum, torque, residuals, or candidates. It only exposes
     ``native_angular_source_terms()`` for
-    ``AetherGrid.collect_native_angular_source_terms()``.
+    ``AetherGrid.collect_native_angular_source_terms()``, which ``step()`` uses
+    only when opt-in native angular transport source collection is enabled.
     """
 
     def __init__(
@@ -161,6 +195,22 @@ class AetherAngularSpongeBoundary(Boundary):
         super().__init__(name=name)
         self.damping_t = float(damping_t)
         self.damping_p = float(damping_p)
+
+    def native_angular_boundary_contract(self):
+        """Return the explicit source-accounting contract for this hook."""
+
+        axis, side = _aether_boundary_face_label(self)
+        return {
+            "scope": "source_accounting",
+            "exchange": "local_damping",
+            "returns": ("native_angular_source_t", "native_angular_source_p"),
+            "reads": ("angular_momentum_t", "angular_momentum_p"),
+            "mutates": (),
+            "physical_boundary_law": False,
+            "requires_outer_face": True,
+            "boundary_axis": axis,
+            "boundary_side": side,
+        }
 
     def native_angular_source_terms(self):
         """Return explicit native-angular damping exchange arrays."""
@@ -185,6 +235,22 @@ class AetherAngularSpongeBoundary(Boundary):
 class AetherAngularNoExchangeBoundary(Boundary):
     """Passive native-angular boundary with explicit zero exchange."""
 
+    def native_angular_boundary_contract(self):
+        """Return the explicit source-accounting contract for this hook."""
+
+        axis, side = _aether_boundary_face_label(self)
+        return {
+            "scope": "source_accounting",
+            "exchange": "none",
+            "returns": ("native_angular_source_t", "native_angular_source_p"),
+            "reads": (),
+            "mutates": (),
+            "physical_boundary_law": False,
+            "requires_outer_face": True,
+            "boundary_axis": axis,
+            "boundary_side": side,
+        }
+
     def native_angular_source_terms(self):
         """Return zero native-angular exchange arrays for this boundary."""
 
@@ -195,6 +261,207 @@ class AetherAngularNoExchangeBoundary(Boundary):
 
     def __repr__(self):
         return f"{self.__class__.__name__}(name={repr(self.name)})"
+
+
+class AetherAngularMatchedFluxBoundary(Boundary):
+    """Candidate physical native-angular matched-flux boundary.
+
+    This experimental boundary reads the incident part of the projected
+    ``native_angular_tau`` normal flux and converts it into dissipative native
+    angular source terms. The source direction opposes the local native angular
+    momentum, so the diagnostic exchange power is non-positive for positive
+    inertia, and zero incident flux yields zero exchange. It is a first
+    candidate law for acceptance testing, not a final absorber derivation.
+    """
+
+    def __init__(
+        self,
+        absorption_t: float = 1.0,
+        absorption_p: float = 1.0,
+        momentum_floor: float = 1.0e-30,
+        name: str = None,
+    ):
+        super().__init__(name=name)
+        self.absorption_t = float(absorption_t)
+        self.absorption_p = float(absorption_p)
+        self.momentum_floor = float(momentum_floor)
+
+    def native_angular_boundary_contract(self):
+        """Return the candidate physical boundary-law contract."""
+
+        axis, side = _aether_boundary_face_label(self)
+        return {
+            "scope": "physical_boundary_candidate",
+            "exchange": "matched_incident_flux_damping",
+            "returns": ("native_angular_source_t", "native_angular_source_p"),
+            "reads": (
+                "native_angular_tau",
+                "angular_e_t",
+                "angular_e_p",
+                "angular_momentum_t",
+                "angular_momentum_p",
+            ),
+            "mutates": (),
+            "physical_boundary_law": True,
+            "requires_outer_face": True,
+            "boundary_axis": axis,
+            "boundary_side": side,
+            "boundary_slots": ("outer_face_cells",),
+            "flux_split": "projected_normal_incident_outgoing_channel_weighted",
+            "metric_frame": "angular_e_t/p projected on outward normal",
+            "falsification_comparator": "direct_native_channel_flux",
+            "zero_incident_response": "zero_source_exchange",
+            "energy_balance": (
+                "nonpositive S_L*L/I exchange power for positive inertia"
+            ),
+            "acceptance_test": (
+                "test_aether_angular_matched_flux_boundary_candidate_is_passive"
+            ),
+        }
+
+    def native_angular_source_terms(self):
+        """Return incident-flux matched dissipative source arrays."""
+
+        _, _, axis_index, normal_sign, boundary = _aether_boundary_face_metadata(self)
+        component = (slice(None), slice(None), slice(None), axis_index)
+        normal_flux = normal_sign * self.grid.native_angular_tau[component]
+        normal_flux = normal_flux[:, :, :, None]
+        incident_flux = 0.5 * (abs(normal_flux) - normal_flux)
+
+        normal_frame_t = (
+            normal_sign * self.grid.angular_e_t[component]
+        )[:, :, :, None]
+        normal_frame_p = (
+            normal_sign * self.grid.angular_e_p[component]
+        )[:, :, :, None]
+        weight_t = abs(normal_frame_t)
+        weight_p = abs(normal_frame_p)
+        momentum_t = self.grid.angular_momentum_t[boundary]
+        momentum_p = self.grid.angular_momentum_p[boundary]
+
+        source_t = bd.zeros_like(self.grid.angular_torque_t)
+        source_p = bd.zeros_like(self.grid.angular_torque_p)
+        source_t[boundary] = (
+            -self.absorption_t
+            * incident_flux[boundary]
+            * weight_t[boundary]
+            * momentum_t
+            / (abs(momentum_t) + self.momentum_floor)
+        )
+        source_p[boundary] = (
+            -self.absorption_p
+            * incident_flux[boundary]
+            * weight_p[boundary]
+            * momentum_p
+            / (abs(momentum_p) + self.momentum_floor)
+        )
+        return source_t, source_p
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(absorption_t={self.absorption_t}, "
+            f"absorption_p={self.absorption_p}, "
+            f"momentum_floor={self.momentum_floor}, name={repr(self.name)})"
+        )
+
+
+class AetherAngularDirectMatchedFluxBoundary(Boundary):
+    """Candidate physical boundary using direct native t/p incident flux.
+
+    This experimental boundary projects ``angular_torque_t`` and
+    ``angular_torque_p`` onto the boundary normal separately, sign-splits each
+    native channel, and converts incident channel flux into dissipative native
+    source terms. It is a comparator candidate for
+    ``AetherAngularMatchedFluxBoundary``, not a final absorber derivation.
+    """
+
+    def __init__(
+        self,
+        absorption_t: float = 1.0,
+        absorption_p: float = 1.0,
+        momentum_floor: float = 1.0e-30,
+        name: str = None,
+    ):
+        super().__init__(name=name)
+        self.absorption_t = float(absorption_t)
+        self.absorption_p = float(absorption_p)
+        self.momentum_floor = float(momentum_floor)
+
+    def native_angular_boundary_contract(self):
+        """Return the direct-channel candidate boundary-law contract."""
+
+        axis, side = _aether_boundary_face_label(self)
+        return {
+            "scope": "physical_boundary_candidate",
+            "exchange": "direct_channel_matched_flux_damping",
+            "returns": ("native_angular_source_t", "native_angular_source_p"),
+            "reads": (
+                "angular_torque_t",
+                "angular_torque_p",
+                "angular_e_t",
+                "angular_e_p",
+                "angular_momentum_t",
+                "angular_momentum_p",
+            ),
+            "mutates": (),
+            "physical_boundary_law": True,
+            "requires_outer_face": True,
+            "boundary_axis": axis,
+            "boundary_side": side,
+            "boundary_slots": ("outer_face_cells",),
+            "flux_split": "direct_native_channel_incident_outgoing",
+            "metric_frame": "angular_e_t/p projected on outward normal",
+            "compares_with": "matched_incident_flux_damping",
+            "zero_incident_response": "zero_source_exchange",
+            "energy_balance": (
+                "nonpositive S_L*L/I exchange power for positive inertia"
+            ),
+            "acceptance_test": (
+                "test_aether_angular_direct_matched_flux_boundary_candidate_"
+                "absorbs_counterpropagating_channel_flux"
+            ),
+        }
+
+    def native_angular_source_terms(self):
+        """Return direct-channel incident-flux dissipative source arrays."""
+
+        _, _, axis_index, normal_sign, boundary = _aether_boundary_face_metadata(self)
+        component = (slice(None), slice(None), slice(None), axis_index)
+        normal_frame_t = (
+            normal_sign * self.grid.angular_e_t[component]
+        )[:, :, :, None]
+        normal_frame_p = (
+            normal_sign * self.grid.angular_e_p[component]
+        )[:, :, :, None]
+        normal_t = self.grid.angular_torque_t * normal_frame_t
+        normal_p = self.grid.angular_torque_p * normal_frame_p
+        incident_t = 0.5 * (abs(normal_t) - normal_t)
+        incident_p = 0.5 * (abs(normal_p) - normal_p)
+        momentum_t = self.grid.angular_momentum_t[boundary]
+        momentum_p = self.grid.angular_momentum_p[boundary]
+
+        source_t = bd.zeros_like(self.grid.angular_torque_t)
+        source_p = bd.zeros_like(self.grid.angular_torque_p)
+        source_t[boundary] = (
+            -self.absorption_t
+            * incident_t[boundary]
+            * momentum_t
+            / (abs(momentum_t) + self.momentum_floor)
+        )
+        source_p[boundary] = (
+            -self.absorption_p
+            * incident_p[boundary]
+            * momentum_p
+            / (abs(momentum_p) + self.momentum_floor)
+        )
+        return source_t, source_p
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(absorption_t={self.absorption_t}, "
+            f"absorption_p={self.absorption_p}, "
+            f"momentum_floor={self.momentum_floor}, name={repr(self.name)})"
+        )
 
 
 class AetherAngularReflectiveBoundary(Boundary):
@@ -220,26 +487,47 @@ class AetherAngularReflectiveBoundary(Boundary):
         self.sign_t = float(sign_t)
         self.sign_p = float(sign_p)
 
+    def _boundary_face_label(self):
+        try:
+            return _aether_boundary_face_label(self)
+        except ValueError as exc:
+            raise ValueError(
+                "AetherAngularReflectiveBoundary must be placed on a single "
+                "outer grid face"
+            ) from exc
+
+    def native_angular_boundary_contract(self):
+        """Return the explicit source-accounting contract for this hook."""
+
+        axis, side = self._boundary_face_label()
+        return {
+            "scope": "source_accounting",
+            "exchange": "mirror_relaxation",
+            "returns": ("native_angular_source_t", "native_angular_source_p"),
+            "reads": ("angular_momentum_t", "angular_momentum_p"),
+            "mutates": (),
+            "physical_boundary_law": False,
+            "requires_outer_face": True,
+            "boundary_axis": axis,
+            "boundary_side": side,
+        }
+
     def _boundary_and_mirror_slices(self):
-        if isinstance(self.x, int) and self.x in (0, -1):
+        axis, _ = self._boundary_face_label()
+        if axis == "x":
             boundary = (self.x, self.y, self.z, slice(None))
             mirror_x = 1 if self.x == 0 else -2
             mirror = (mirror_x, self.y, self.z, slice(None))
             return boundary, mirror
-        if isinstance(self.y, int) and self.y in (0, -1):
+        if axis == "y":
             boundary = (self.x, self.y, self.z, slice(None))
             mirror_y = 1 if self.y == 0 else -2
             mirror = (self.x, mirror_y, self.z, slice(None))
             return boundary, mirror
-        if isinstance(self.z, int) and self.z in (0, -1):
-            boundary = (self.x, self.y, self.z, slice(None))
-            mirror_z = 1 if self.z == 0 else -2
-            mirror = (self.x, self.y, mirror_z, slice(None))
-            return boundary, mirror
-        raise ValueError(
-            "AetherAngularReflectiveBoundary must be placed on a single "
-            "outer grid face"
-        )
+        boundary = (self.x, self.y, self.z, slice(None))
+        mirror_z = 1 if self.z == 0 else -2
+        mirror = (self.x, self.y, mirror_z, slice(None))
+        return boundary, mirror
 
     def native_angular_source_terms(self):
         """Return explicit mirror-relaxation exchange arrays."""

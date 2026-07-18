@@ -96,6 +96,11 @@ class AetherGrid:
         permittivity: float = 1.0,
         permeability: float = 1.0,
         courant_number: float = None,
+        native_angular_transport: bool = False,
+        native_angular_collect_sources: bool = True,
+        native_angular_update_clocks: bool = False,
+        native_angular_feedback_mode=None,
+        native_angular_feedback_scale: float = 1.0,
     ):
         """
         Args:
@@ -107,9 +112,30 @@ class AetherGrid:
                 Defaults to the inverse of the square root of the number of
                 dimensions > 1 (optimal value). The timestep of the simulation
                 will be derived from this number using the CFL-condition.
+            native_angular_transport: opt-in native angular momentum transport
+                inside ``update()``. Defaults to false.
+            native_angular_collect_sources: collect opt-in native angular
+                source and boundary hooks when native transport runs.
+            native_angular_update_clocks: update ``omega_t`` and ``omega_p``
+                from positive inertia after native transport runs.
+            native_angular_feedback_mode: optional opt-in feedback mode for
+                applying ``native_angular_linear_response`` to ``linear_a``.
+                Use ``"add"``, ``"replace"``, or ``None``.
+            native_angular_feedback_scale: scale used when projecting native
+                angular stress for opt-in feedback.
         """
+        if native_angular_feedback_mode not in (None, "add", "replace"):
+            raise ValueError(
+                "native_angular_feedback_mode must be None, 'add', or 'replace'"
+            )
+
         # save the grid spacing
         self.grid_spacing = float(grid_spacing)
+        self.native_angular_transport_enabled = bool(native_angular_transport)
+        self.native_angular_collect_sources = bool(native_angular_collect_sources)
+        self.native_angular_update_clocks = bool(native_angular_update_clocks)
+        self.native_angular_feedback_mode = native_angular_feedback_mode
+        self.native_angular_feedback_scale = float(native_angular_feedback_scale)
 
         # save grid shape as integers
         self.Nx, self.Ny, self.Nz = self._handle_tuple(shape)
@@ -228,8 +254,20 @@ class AetherGrid:
         )
         self.native_angular_source_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.native_angular_source_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_exchange_power_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_exchange_power_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
         self.native_angular_momentum_rhs_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.native_angular_momentum_rhs_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_transport_power_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_transport_power_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
         self.native_angular_momentum_candidate_t = bd.zeros(
             (self.Nx, self.Ny, self.Nz, 1)
         )
@@ -241,6 +279,45 @@ class AetherGrid:
         self.native_angular_charge_flux_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.native_angular_charge_flux_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.native_angular_charge_reduction = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_boundary_normal_flux = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_incident_flux = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_outgoing_flux = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_incident_flux_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_incident_flux_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_outgoing_flux_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_outgoing_flux_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_direct_normal_flux_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_direct_normal_flux_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_direct_incident_flux_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_direct_incident_flux_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_direct_outgoing_flux_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_boundary_direct_outgoing_flux_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
 
         self._sync_public_aliases()
         
@@ -413,8 +490,9 @@ class AetherGrid:
         4. expose ``E`` and ``H``-like observables and run package-style scene
            hooks;
         5. couple the angular sector back into linear acceleration;
-        6. repeat the same pattern one derivative level higher to obtain jerk;
-        7. advance the linear state with the resulting Taylor step.
+        6. optionally run explicit native-angular transport / feedback;
+        7. repeat the same pattern one derivative level higher to obtain jerk;
+        8. advance the linear state with the resulting Taylor step.
         """
 
         self.updateBoundaries()
@@ -427,6 +505,8 @@ class AetherGrid:
         # Existing package hooks still operate on E/H-like observables.
         self.updateEH()
         self.update_linear_angular_coupling()
+        self.update_native_angular_opt_in_step()
+        self.detect_native_angular()
         self.update_second_order_linear_sector()
         self.update_second_order_angular_sector()
         self.update_second_order_coupling()
@@ -466,6 +546,30 @@ class AetherGrid:
 
         self.angular_A = angular_to_linear_bridge(e_eta * self.angular_H)
         self.linear_a = rho_q0 * self.linear_E + inv_rho * self.angular_A
+
+    def update_native_angular_opt_in_step(self):
+        """Run optional native-angular transport and feedback inside update().
+
+        This hook is inert unless ``AetherGrid`` was constructed with
+        ``native_angular_transport=True`` or a non-``None``
+        ``native_angular_feedback_mode``. It is the first production-lifecycle
+        integration point for the native-angular staging helpers, while still
+        keeping the default aether bridge unchanged.
+        """
+
+        if self.native_angular_transport_enabled:
+            self.advance_native_angular_momentum_transport(
+                delta=self.time_step,
+                collect_sources=self.native_angular_collect_sources,
+                update_clocks=self.native_angular_update_clocks,
+            )
+
+        if self.native_angular_feedback_mode is not None:
+            self.apply_native_angular_linear_response(
+                metric_length=self.angular_metric_length,
+                scale=self.native_angular_feedback_scale,
+                mode=self.native_angular_feedback_mode,
+            )
 
     def update_second_order_linear_sector(self):
         """Update second-order linear quantities from the linear acceleration."""
@@ -597,6 +701,73 @@ class AetherGrid:
         total_energy = bd.sum(energy_t + energy_p)
         return energy_t, energy_p, total_energy
 
+    def evaluate_native_angular_exchange_power(
+        self,
+        source_t=None,
+        source_p=None,
+        momentum_t=None,
+        momentum_p=None,
+        inertia_t=None,
+        inertia_p=None,
+    ):
+        """Evaluate native angular source power diagnostics.
+
+        Args:
+            source_t: Optional toroidal source/exchange term. Defaults to
+                ``native_angular_source_t``.
+            source_p: Optional poloidal source/exchange term. Defaults to
+                ``native_angular_source_p``.
+            momentum_t: Optional toroidal momentum field. Defaults to
+                ``angular_momentum_t``.
+            momentum_p: Optional poloidal momentum field. Defaults to
+                ``angular_momentum_p``.
+            inertia_t: Optional toroidal inertia field. Defaults to
+                ``angular_inertia_t``.
+            inertia_p: Optional poloidal inertia field. Defaults to
+                ``angular_inertia_p``.
+
+        Returns:
+            ``(power_t, power_p, total_power)`` using
+            ``P_L = S_L * L/I`` in each native angular channel.
+
+        Notes:
+            This diagnostic classifies explicit source or boundary exchange as
+            energy injecting, neutral, or dissipative. It does not advance
+            momentum, define a Hamiltonian, or make boundary hooks physical.
+        """
+
+        if source_t is None:
+            source_t = self.native_angular_source_t
+        if source_p is None:
+            source_p = self.native_angular_source_p
+        source_t, source_p = self._validate_native_angular_source_terms(
+            source_t,
+            source_p,
+        )
+        momentum_t = (
+            self.angular_momentum_t if momentum_t is None else bd.asarray(momentum_t)
+        )
+        momentum_p = (
+            self.angular_momentum_p if momentum_p is None else bd.asarray(momentum_p)
+        )
+        inertia_t = self.angular_inertia_t if inertia_t is None else bd.asarray(inertia_t)
+        inertia_p = self.angular_inertia_p if inertia_p is None else bd.asarray(inertia_p)
+
+        if bd.max(inertia_t <= 0) or bd.max(inertia_p <= 0):
+            raise ValueError("native angular inertia must be positive")
+
+        self.native_angular_exchange_power_t = source_t * momentum_t / inertia_t
+        self.native_angular_exchange_power_p = source_p * momentum_p / inertia_p
+        total_power = bd.sum(
+            self.native_angular_exchange_power_t
+            + self.native_angular_exchange_power_p
+        )
+        return (
+            self.native_angular_exchange_power_t,
+            self.native_angular_exchange_power_p,
+            total_power,
+        )
+
     def update_native_angular_torque(
         self,
         previous_momentum_t=None,
@@ -643,6 +814,60 @@ class AetherGrid:
             self.angular_momentum_p - previous_momentum_p
         ) / delta
         return self.angular_torque_t, self.angular_torque_p
+
+    def configure_native_angular_frame(
+        self,
+        e_t,
+        e_p,
+        require_orthogonal=True,
+    ):
+        """Set the native angular frame explicitly.
+
+        Args:
+            e_t: Toroidal frame vector, either shape ``(3,)`` or
+                ``(Nx, Ny, Nz, 3)``.
+            e_p: Poloidal frame vector, either shape ``(3,)`` or
+                ``(Nx, Ny, Nz, 3)``.
+            require_orthogonal: When true, reject frames where ``e_t`` and
+                ``e_p`` have a nonzero local dot product.
+
+        Returns:
+            ``(angular_e_t, angular_e_p)``.
+
+        Notes:
+            This only configures the bridge projection frame. It does not
+            derive a physical local angular orientation law.
+        """
+
+        expected_shape = self.angular_e_t.shape
+
+        def _expand_frame(name, value):
+            value = bd.asarray(value)
+            if value.shape == (3,):
+                value = bd.ones(expected_shape) * value
+            if value.shape != expected_shape:
+                raise ValueError(
+                    f"{name} must have shape (3,) or {expected_shape}, "
+                    f"got {value.shape}"
+                )
+            return value
+
+        e_t = _expand_frame("e_t", e_t)
+        e_p = _expand_frame("e_p", e_p)
+        e_t_np = bd.numpy(e_t)
+        e_p_np = bd.numpy(e_p)
+        norm_t = (e_t_np * e_t_np).sum(axis=-1)
+        norm_p = (e_p_np * e_p_np).sum(axis=-1)
+        if (norm_t <= 0.0).any() or (norm_p <= 0.0).any():
+            raise ValueError("native angular frame vectors must be nonzero")
+        if require_orthogonal:
+            dot = (e_t_np * e_p_np).sum(axis=-1)
+            if (abs(dot) > 1.0e-12).any():
+                raise ValueError("native angular frame vectors must be orthogonal")
+
+        self.angular_e_t = e_t
+        self.angular_e_p = e_p
+        return self.angular_e_t, self.angular_e_p
 
     def project_native_angular_torque(self):
         """Project the two native torque channels onto the local angular frame.
@@ -782,14 +1007,15 @@ class AetherGrid:
         ``native_angular_source_terms()``, returning ``(source_t, source_p)``
         arrays with the same shape and units as ``angular_torque_t`` and
         ``angular_torque_p``. This method only sums those explicit terms into
-        ``native_angular_source_t`` and ``native_angular_source_p``. It is not
-        called by ``step()``, does not update angular momentum, and does not
-        make boundary exchange implicit in the residual helper. The source
-        buffers are reset on every call, so include flags select the current
-        accounting view rather than accumulating previous collections. Current
-        boundary hooks are source-buffer contracts only: they may read native
-        angular momentum, but they must not mutate clocks, moments, torque
-        fields, residuals, candidates, or linear-sector state.
+        ``native_angular_source_t`` and ``native_angular_source_p``. It is
+        called by ``step()`` only when opt-in native angular transport and
+        source collection are enabled, does not itself update angular momentum,
+        and does not make boundary exchange implicit in the residual helper.
+        The source buffers are reset on every call, so include flags select the
+        current accounting view rather than accumulating previous collections.
+        Current boundary hooks are source-buffer contracts only: they may read
+        native angular momentum, but they must not mutate clocks, moments,
+        torque fields, residuals, candidates, or linear-sector state.
         """
 
         self.native_angular_source_t *= 0.0
@@ -823,6 +1049,456 @@ class AetherGrid:
             self.native_angular_source_p += source_p
 
         return self.native_angular_source_t, self.native_angular_source_p
+
+    def collect_native_angular_boundary_contracts(self):
+        """Return metadata contracts for native-angular boundary hooks.
+
+        Boundaries may opt in by exposing
+        ``native_angular_boundary_contract()``. The returned dictionaries are
+        copied and annotated with ``boundary_type`` and ``boundary_name`` so
+        examples and tests can report the current boundary semantics without
+        inferring physical absorber or reflector behavior from source hooks.
+        """
+
+        contracts = []
+        for boundary in self.boundaries:
+            hook = getattr(boundary, "native_angular_boundary_contract", None)
+            if hook is None:
+                continue
+            contract = dict(hook())
+            contract["boundary_type"] = boundary.__class__.__name__
+            contract["boundary_name"] = getattr(boundary, "name", None)
+            contracts.append(contract)
+        return contracts
+
+    def validate_native_angular_boundary_contracts(
+        self,
+        require_physical_laws=False,
+    ):
+        """Validate advertised native-angular boundary semantics.
+
+        The current accepted contract is intentionally narrow:
+        source-accounting hooks may return explicit source buffers and may not
+        claim to be physical boundary laws. Passing
+        ``require_physical_laws=True`` turns this into the acceptance gate for
+        future absorbers or reflectors: every boundary contract must explicitly
+        claim a physical law and must name the extra geometry, flux, and
+        balance fields needed to make that claim reviewable.
+        """
+
+        contracts = self.collect_native_angular_boundary_contracts()
+        required_keys = {
+            "scope",
+            "returns",
+            "reads",
+            "mutates",
+            "physical_boundary_law",
+        }
+        physical_law_keys = {
+            "boundary_slots",
+            "flux_split",
+            "metric_frame",
+            "energy_balance",
+            "acceptance_test",
+        }
+
+        if require_physical_laws and not contracts:
+            raise ValueError("native angular physical boundary law required")
+
+        for contract in contracts:
+            label = contract.get("boundary_name") or contract.get("boundary_type")
+            missing = sorted(required_keys - set(contract))
+            if missing:
+                raise ValueError(
+                    f"native angular boundary contract {label} is missing "
+                    f"required keys: {missing}"
+                )
+
+            if contract["scope"] == "source_accounting":
+                if contract["physical_boundary_law"]:
+                    raise ValueError(
+                        "source-accounting native angular boundary contracts "
+                        "must not claim physical_boundary_law=True"
+                    )
+                if tuple(contract["returns"]) != (
+                    "native_angular_source_t",
+                    "native_angular_source_p",
+                ):
+                    raise ValueError(
+                        "source-accounting native angular boundary contracts "
+                        "must return native_angular_source_t/p"
+                    )
+                if tuple(contract["mutates"]) != ():
+                    raise ValueError(
+                        "source-accounting native angular boundary contracts "
+                        "must declare no direct mutation targets"
+                    )
+            elif contract["physical_boundary_law"]:
+                missing = sorted(physical_law_keys - set(contract))
+                if missing:
+                    raise ValueError(
+                        f"physical native angular boundary contract {label} "
+                        f"is missing required keys: {missing}"
+                    )
+            else:
+                raise ValueError(
+                    "native angular boundary contract must either be "
+                    "source_accounting or declare physical_boundary_law=True"
+                )
+
+            if require_physical_laws and not contract["physical_boundary_law"]:
+                raise ValueError("native angular physical boundary law required")
+
+        return contracts
+
+    def _native_angular_boundary_face(self, axis, side):
+        """Return axis metadata and a single outer-face slice."""
+
+        axis_map = {"x": 0, "y": 1, "z": 2, 0: 0, 1: 1, 2: 2}
+        if axis not in axis_map:
+            raise ValueError("axis must be 'x', 'y', 'z', 0, 1, or 2")
+        axis_index = axis_map[axis]
+        axis_label = ("x", "y", "z")[axis_index]
+        if side not in ("low", "high"):
+            raise ValueError("side must be 'low' or 'high'")
+
+        face_index = 0 if side == "low" else -1
+        normal_sign = -1.0 if side == "low" else 1.0
+        face = [slice(None), slice(None), slice(None), slice(None)]
+        face[axis_index] = face_index
+        return axis_index, axis_label, normal_sign, tuple(face)
+
+    def evaluate_native_angular_boundary_flux(self, axis, side, field=None):
+        """Split projected native-angular boundary flux into incident/outgoing.
+
+        Args:
+            axis: Boundary-normal axis, either ``"x"``, ``"y"``, ``"z"``, or
+                integer ``0`` / ``1`` / ``2``.
+            side: ``"low"`` or ``"high"`` outer face on that axis.
+            field: Optional projected angular torque/flux vector. Defaults to
+                ``native_angular_tau``.
+
+        Returns:
+            A dictionary containing the boundary face, outward-normal flux,
+            incident flux, outgoing flux, and scalar totals.
+
+        Notes:
+            This is an observability diagnostic for the current collocated
+            bridge. It separates signs of the projected ``native_angular_tau``
+            normal component, but it is not yet a native t/p flux law and does
+            not define absorption or reflection.
+        """
+
+        if field is None:
+            field = self.native_angular_tau
+        field = bd.asarray(field)
+        if field.shape != self.native_angular_tau.shape:
+            raise ValueError(
+                "native angular boundary flux field must have shape "
+                f"{self.native_angular_tau.shape}, got {field.shape}"
+            )
+
+        axis_index, axis_label, normal_sign, face = self._native_angular_boundary_face(
+            axis,
+            side,
+        )
+        component_slice = list(face)
+        component_slice[-1] = slice(axis_index, axis_index + 1)
+        component_slice = tuple(component_slice)
+        normal_flux = normal_sign * field[component_slice]
+        magnitude = abs(normal_flux)
+        outgoing_flux = 0.5 * (normal_flux + magnitude)
+        incident_flux = 0.5 * (magnitude - normal_flux)
+
+        self.native_angular_boundary_normal_flux *= 0.0
+        self.native_angular_boundary_incident_flux *= 0.0
+        self.native_angular_boundary_outgoing_flux *= 0.0
+        self.native_angular_boundary_normal_flux[face] = normal_flux
+        self.native_angular_boundary_incident_flux[face] = incident_flux
+        self.native_angular_boundary_outgoing_flux[face] = outgoing_flux
+
+        return {
+            "axis": axis_label,
+            "side": side,
+            "normal_sign": normal_sign,
+            "face": face,
+            "normal_flux": normal_flux,
+            "incident_flux": incident_flux,
+            "outgoing_flux": outgoing_flux,
+            "net_flux": bd.sum(normal_flux),
+            "incident_total": bd.sum(incident_flux),
+            "outgoing_total": bd.sum(outgoing_flux),
+        }
+
+    def collect_native_angular_boundary_fluxes(self, contracts=None, field=None):
+        """Evaluate boundary-flux diagnostics for registered boundary faces.
+
+        Args:
+            contracts: Optional boundary-contract dictionaries. Defaults to
+                ``validate_native_angular_boundary_contracts()``.
+            field: Optional projected angular torque/flux vector passed to
+                ``evaluate_native_angular_boundary_flux()``.
+
+        Returns:
+            A list of per-boundary summary dictionaries containing contract
+            identity metadata and scalar incident/outgoing/net flux totals.
+
+        Notes:
+            This connects boundary-contract metadata to the projected
+            incident/outgoing diagnostic. It does not collect source terms,
+            advance momentum, or make the boundary contract physical.
+        """
+
+        if contracts is None:
+            contracts = self.validate_native_angular_boundary_contracts()
+
+        fluxes = []
+        for contract in contracts:
+            if "boundary_axis" not in contract or "boundary_side" not in contract:
+                continue
+            flux = self.evaluate_native_angular_boundary_flux(
+                axis=contract["boundary_axis"],
+                side=contract["boundary_side"],
+                field=field,
+            )
+            fluxes.append(
+                {
+                    "boundary_type": contract.get("boundary_type"),
+                    "boundary_name": contract.get("boundary_name"),
+                    "exchange": contract.get("exchange"),
+                    "physical_boundary_law": contract.get(
+                        "physical_boundary_law",
+                    ),
+                    "axis": flux["axis"],
+                    "side": flux["side"],
+                    "normal_sign": flux["normal_sign"],
+                    "incident_total": flux["incident_total"],
+                    "outgoing_total": flux["outgoing_total"],
+                    "net_flux": flux["net_flux"],
+                }
+            )
+        return fluxes
+
+    def evaluate_native_angular_boundary_channel_flux(self, axis, side, field=None):
+        """Split projected boundary flux into native t/p channel diagnostics.
+
+        This first channel diagnostic weights the incident/outgoing projected
+        normal flux by the absolute projection of the local native angular
+        frame vectors ``angular_e_t`` and ``angular_e_p`` on the boundary
+        normal. It makes the matched-flux candidate measurable per channel, but
+        it is still a bridge diagnostic rather than a derived native flux law.
+        """
+
+        axis_index, _, normal_sign, face = self._native_angular_boundary_face(
+            axis,
+            side,
+        )
+        flux = self.evaluate_native_angular_boundary_flux(
+            axis=axis,
+            side=side,
+            field=field,
+        )
+        component = (slice(None), slice(None), slice(None), axis_index)
+        weight_t = abs((normal_sign * self.angular_e_t[component])[:, :, :, None])
+        weight_p = abs((normal_sign * self.angular_e_p[component])[:, :, :, None])
+        incident_t = flux["incident_flux"] * weight_t[face]
+        incident_p = flux["incident_flux"] * weight_p[face]
+        outgoing_t = flux["outgoing_flux"] * weight_t[face]
+        outgoing_p = flux["outgoing_flux"] * weight_p[face]
+
+        self.native_angular_boundary_incident_flux_t *= 0.0
+        self.native_angular_boundary_incident_flux_p *= 0.0
+        self.native_angular_boundary_outgoing_flux_t *= 0.0
+        self.native_angular_boundary_outgoing_flux_p *= 0.0
+        self.native_angular_boundary_incident_flux_t[face] = incident_t
+        self.native_angular_boundary_incident_flux_p[face] = incident_p
+        self.native_angular_boundary_outgoing_flux_t[face] = outgoing_t
+        self.native_angular_boundary_outgoing_flux_p[face] = outgoing_p
+
+        channel_flux = dict(flux)
+        channel_flux.update(
+            {
+                "incident_flux_t": incident_t,
+                "incident_flux_p": incident_p,
+                "outgoing_flux_t": outgoing_t,
+                "outgoing_flux_p": outgoing_p,
+                "incident_total_t": bd.sum(incident_t),
+                "incident_total_p": bd.sum(incident_p),
+                "outgoing_total_t": bd.sum(outgoing_t),
+                "outgoing_total_p": bd.sum(outgoing_p),
+            }
+        )
+        return channel_flux
+
+    def collect_native_angular_boundary_channel_fluxes(
+        self,
+        contracts=None,
+        field=None,
+    ):
+        """Evaluate t/p channel boundary fluxes for registered contracts."""
+
+        if contracts is None:
+            contracts = self.validate_native_angular_boundary_contracts()
+
+        fluxes = []
+        for contract in contracts:
+            if "boundary_axis" not in contract or "boundary_side" not in contract:
+                continue
+            flux = self.evaluate_native_angular_boundary_channel_flux(
+                axis=contract["boundary_axis"],
+                side=contract["boundary_side"],
+                field=field,
+            )
+            fluxes.append(
+                {
+                    "boundary_type": contract.get("boundary_type"),
+                    "boundary_name": contract.get("boundary_name"),
+                    "exchange": contract.get("exchange"),
+                    "physical_boundary_law": contract.get(
+                        "physical_boundary_law",
+                    ),
+                    "axis": flux["axis"],
+                    "side": flux["side"],
+                    "incident_total": flux["incident_total"],
+                    "outgoing_total": flux["outgoing_total"],
+                    "net_flux": flux["net_flux"],
+                    "incident_total_t": flux["incident_total_t"],
+                    "incident_total_p": flux["incident_total_p"],
+                    "outgoing_total_t": flux["outgoing_total_t"],
+                    "outgoing_total_p": flux["outgoing_total_p"],
+                }
+            )
+        return fluxes
+
+    def evaluate_native_angular_boundary_direct_channel_flux(
+        self,
+        axis,
+        side,
+        torque_t=None,
+        torque_p=None,
+    ):
+        """Split native t/p boundary flux before summing projected channels.
+
+        This comparator projects ``angular_torque_t`` and ``angular_torque_p``
+        separately through ``angular_e_t/p`` and then sign-splits each channel.
+        It is useful for falsifying the current matched-flux candidate, whose
+        first diagnostic splits the summed projected normal flux and then
+        weights that total by channel visibility.
+        """
+
+        if torque_t is None:
+            torque_t = self.angular_torque_t
+        else:
+            torque_t = bd.asarray(torque_t)
+        if torque_p is None:
+            torque_p = self.angular_torque_p
+        else:
+            torque_p = bd.asarray(torque_p)
+        if torque_t.shape != self.angular_torque_t.shape:
+            raise ValueError(
+                "native angular direct channel flux torque_t must have shape "
+                f"{self.angular_torque_t.shape}, got {torque_t.shape}"
+            )
+        if torque_p.shape != self.angular_torque_p.shape:
+            raise ValueError(
+                "native angular direct channel flux torque_p must have shape "
+                f"{self.angular_torque_p.shape}, got {torque_p.shape}"
+            )
+
+        axis_index, axis_label, normal_sign, face = self._native_angular_boundary_face(
+            axis,
+            side,
+        )
+        component = (slice(None), slice(None), slice(None), axis_index)
+        frame_t = (normal_sign * self.angular_e_t[component])[:, :, :, None]
+        frame_p = (normal_sign * self.angular_e_p[component])[:, :, :, None]
+        normal_t = torque_t[face] * frame_t[face]
+        normal_p = torque_p[face] * frame_p[face]
+        magnitude_t = abs(normal_t)
+        magnitude_p = abs(normal_p)
+        outgoing_t = 0.5 * (normal_t + magnitude_t)
+        outgoing_p = 0.5 * (normal_p + magnitude_p)
+        incident_t = 0.5 * (magnitude_t - normal_t)
+        incident_p = 0.5 * (magnitude_p - normal_p)
+
+        self.native_angular_boundary_direct_normal_flux_t *= 0.0
+        self.native_angular_boundary_direct_normal_flux_p *= 0.0
+        self.native_angular_boundary_direct_incident_flux_t *= 0.0
+        self.native_angular_boundary_direct_incident_flux_p *= 0.0
+        self.native_angular_boundary_direct_outgoing_flux_t *= 0.0
+        self.native_angular_boundary_direct_outgoing_flux_p *= 0.0
+        self.native_angular_boundary_direct_normal_flux_t[face] = normal_t
+        self.native_angular_boundary_direct_normal_flux_p[face] = normal_p
+        self.native_angular_boundary_direct_incident_flux_t[face] = incident_t
+        self.native_angular_boundary_direct_incident_flux_p[face] = incident_p
+        self.native_angular_boundary_direct_outgoing_flux_t[face] = outgoing_t
+        self.native_angular_boundary_direct_outgoing_flux_p[face] = outgoing_p
+
+        return {
+            "axis": axis_label,
+            "side": side,
+            "normal_sign": normal_sign,
+            "face": face,
+            "normal_flux_t": normal_t,
+            "normal_flux_p": normal_p,
+            "incident_flux_t": incident_t,
+            "incident_flux_p": incident_p,
+            "outgoing_flux_t": outgoing_t,
+            "outgoing_flux_p": outgoing_p,
+            "net_flux_t": bd.sum(normal_t),
+            "net_flux_p": bd.sum(normal_p),
+            "net_flux": bd.sum(normal_t + normal_p),
+            "incident_total_t": bd.sum(incident_t),
+            "incident_total_p": bd.sum(incident_p),
+            "incident_total": bd.sum(incident_t + incident_p),
+            "outgoing_total_t": bd.sum(outgoing_t),
+            "outgoing_total_p": bd.sum(outgoing_p),
+            "outgoing_total": bd.sum(outgoing_t + outgoing_p),
+        }
+
+    def collect_native_angular_boundary_direct_channel_fluxes(
+        self,
+        contracts=None,
+        torque_t=None,
+        torque_p=None,
+    ):
+        """Evaluate direct native t/p channel fluxes for registered contracts."""
+
+        if contracts is None:
+            contracts = self.validate_native_angular_boundary_contracts()
+
+        fluxes = []
+        for contract in contracts:
+            if "boundary_axis" not in contract or "boundary_side" not in contract:
+                continue
+            flux = self.evaluate_native_angular_boundary_direct_channel_flux(
+                axis=contract["boundary_axis"],
+                side=contract["boundary_side"],
+                torque_t=torque_t,
+                torque_p=torque_p,
+            )
+            fluxes.append(
+                {
+                    "boundary_type": contract.get("boundary_type"),
+                    "boundary_name": contract.get("boundary_name"),
+                    "exchange": contract.get("exchange"),
+                    "physical_boundary_law": contract.get(
+                        "physical_boundary_law",
+                    ),
+                    "axis": flux["axis"],
+                    "side": flux["side"],
+                    "net_flux_t": flux["net_flux_t"],
+                    "net_flux_p": flux["net_flux_p"],
+                    "net_flux": flux["net_flux"],
+                    "incident_total_t": flux["incident_total_t"],
+                    "incident_total_p": flux["incident_total_p"],
+                    "incident_total": flux["incident_total"],
+                    "outgoing_total_t": flux["outgoing_total_t"],
+                    "outgoing_total_p": flux["outgoing_total_p"],
+                    "outgoing_total": flux["outgoing_total"],
+                }
+            )
+        return fluxes
 
     def evaluate_native_angular_momentum_rhs(
         self,
@@ -859,6 +1535,71 @@ class AetherGrid:
         return (
             self.native_angular_momentum_rhs_t,
             self.native_angular_momentum_rhs_p,
+        )
+
+    def evaluate_native_angular_transport_power(
+        self,
+        source_t=None,
+        source_p=None,
+        momentum_t=None,
+        momentum_p=None,
+        inertia_t=None,
+        inertia_p=None,
+    ):
+        """Evaluate native angular transport-power diagnostics.
+
+        Args:
+            source_t: Optional toroidal source/exchange term for the transport
+                RHS. Defaults to zero.
+            source_p: Optional poloidal source/exchange term for the transport
+                RHS. Defaults to zero.
+            momentum_t: Optional toroidal momentum field. Defaults to
+                ``angular_momentum_t``.
+            momentum_p: Optional poloidal momentum field. Defaults to
+                ``angular_momentum_p``.
+            inertia_t: Optional toroidal inertia field. Defaults to
+                ``angular_inertia_t``.
+            inertia_p: Optional poloidal inertia field. Defaults to
+                ``angular_inertia_p``.
+
+        Returns:
+            ``(power_t, power_p, total_power)`` using
+            ``P_rhs = (S_L - ell*div(tau_native))*L/I``.
+
+        Notes:
+            This is the full-RHS companion to
+            ``evaluate_native_angular_exchange_power()``. It is useful for
+            finite-step energy accounting of the staged transport law, but it
+            does not define a Hamiltonian or make the native angular transport
+            law physical.
+        """
+
+        rhs_t, rhs_p = self.evaluate_native_angular_momentum_rhs(
+            source_t=source_t,
+            source_p=source_p,
+        )
+        momentum_t = (
+            self.angular_momentum_t if momentum_t is None else bd.asarray(momentum_t)
+        )
+        momentum_p = (
+            self.angular_momentum_p if momentum_p is None else bd.asarray(momentum_p)
+        )
+        inertia_t = self.angular_inertia_t if inertia_t is None else bd.asarray(inertia_t)
+        inertia_p = self.angular_inertia_p if inertia_p is None else bd.asarray(inertia_p)
+
+        if bd.max(inertia_t <= 0) or bd.max(inertia_p <= 0):
+            raise ValueError("native angular inertia must be positive")
+
+        self.native_angular_transport_power_t = rhs_t * momentum_t / inertia_t
+        self.native_angular_transport_power_p = rhs_p * momentum_p / inertia_p
+        total_power = bd.sum(
+            self.native_angular_transport_power_t
+            + self.native_angular_transport_power_p
+        )
+        return (
+            self.native_angular_transport_power_t,
+            self.native_angular_transport_power_p,
+            total_power,
         )
 
     def predict_native_angular_momentum_step(
@@ -927,8 +1668,9 @@ class AetherGrid:
 
             ``L_next = L + delta*(S_L - ell*div(tau_native))``.
 
-            It is still not called by ``step()``, does not update the legacy
-            bridge fields, and does not define physical boundary semantics.
+            It runs from ``step()`` only when ``native_angular_transport`` is
+            enabled, does not update the legacy bridge fields, and does not
+            define physical boundary semantics.
         """
 
         if update_clocks:
@@ -994,6 +1736,60 @@ class AetherGrid:
             metric_length=metric_length,
         )
         return self.native_angular_linear_response
+
+    def apply_native_angular_linear_response(
+        self,
+        response=None,
+        metric_length=None,
+        scale=1.0,
+        mode="add",
+    ):
+        """Apply a native-angular linear response to ``linear_a`` explicitly.
+
+        Args:
+            response: Optional precomputed response field. If omitted, the
+                current ``native_angular_tau`` is projected with
+                ``evaluate_native_angular_linear_response()``.
+            metric_length: Optional metric length used only when ``response``
+                is omitted.
+            scale: Scalar multiplier used only when ``response`` is omitted.
+            mode: ``"add"`` adds the response to ``linear_a``;
+                ``"replace"`` replaces ``linear_a`` with the response.
+
+        Returns:
+            The updated ``linear_a`` field.
+
+        Notes:
+            This is an opt-in coupling experiment. It does not run from
+            ``step()``, does not write the legacy ``angular_A`` bridge field,
+            and does not define the physical feedback law.
+        """
+
+        if mode not in ("add", "replace"):
+            raise ValueError("mode must be 'add' or 'replace'")
+
+        if response is None:
+            response = self.evaluate_native_angular_linear_response(
+                metric_length=metric_length,
+                scale=scale,
+            )
+        else:
+            response = bd.asarray(response)
+            expected_shape = self.linear_a.shape
+            if response.shape != expected_shape:
+                raise ValueError(
+                    "native angular linear response must have shape "
+                    f"{expected_shape}, got {response.shape}"
+            )
+            self.native_angular_linear_response = response
+
+        if mode == "add":
+            self.linear_a = self.linear_a + response
+        else:
+            self.linear_a = response
+
+        self._sync_public_aliases()
+        return self.linear_a
 
     def evaluate_linear_charge_flux_candidate(
         self,
@@ -1196,6 +1992,17 @@ class AetherGrid:
         return
 
 
+    def detect_native_angular(self):
+        """Run optional detector hooks for native-angular observables."""
+
+        for det in self.detectors:
+            detect = getattr(det, "detect_native_angular", None)
+            if detect is not None:
+                detect()
+
+        return
+
+
 
     def reset(self):
         """reset the grid by setting all fields to zero"""
@@ -1236,8 +2043,12 @@ class AetherGrid:
         self.native_angular_transport_residual_p *= 0.0
         self.native_angular_source_t *= 0.0
         self.native_angular_source_p *= 0.0
+        self.native_angular_exchange_power_t *= 0.0
+        self.native_angular_exchange_power_p *= 0.0
         self.native_angular_momentum_rhs_t *= 0.0
         self.native_angular_momentum_rhs_p *= 0.0
+        self.native_angular_transport_power_t *= 0.0
+        self.native_angular_transport_power_p *= 0.0
         self.native_angular_momentum_candidate_t *= 0.0
         self.native_angular_momentum_candidate_p *= 0.0
         self.native_angular_linear_response *= 0.0
@@ -1245,6 +2056,19 @@ class AetherGrid:
         self.native_angular_charge_flux_t *= 0.0
         self.native_angular_charge_flux_p *= 0.0
         self.native_angular_charge_reduction *= 0.0
+        self.native_angular_boundary_normal_flux *= 0.0
+        self.native_angular_boundary_incident_flux *= 0.0
+        self.native_angular_boundary_outgoing_flux *= 0.0
+        self.native_angular_boundary_incident_flux_t *= 0.0
+        self.native_angular_boundary_incident_flux_p *= 0.0
+        self.native_angular_boundary_outgoing_flux_t *= 0.0
+        self.native_angular_boundary_outgoing_flux_p *= 0.0
+        self.native_angular_boundary_direct_normal_flux_t *= 0.0
+        self.native_angular_boundary_direct_normal_flux_p *= 0.0
+        self.native_angular_boundary_direct_incident_flux_t *= 0.0
+        self.native_angular_boundary_direct_incident_flux_p *= 0.0
+        self.native_angular_boundary_direct_outgoing_flux_t *= 0.0
+        self.native_angular_boundary_direct_outgoing_flux_p *= 0.0
 
         self._sync_public_aliases()
         self.time_steps_passed = 0
@@ -1429,6 +2253,6 @@ class AetherGrid:
         dic = {}
         for detector in self.detectors:
             values = detector.detector_values()
-            dic[detector.name + " (E)"] = _numpyfy(values['E'])
-            dic[detector.name + " (H)"] = _numpyfy(values['H'])
+            for field_name, field_values in values.items():
+                dic[detector.name + f" ({field_name})"] = _numpyfy(field_values)
         savez(path.join(self.folder, "detector_readings"), **dic)
