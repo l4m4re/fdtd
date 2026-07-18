@@ -150,6 +150,12 @@ adds explicit local damping sources and requires the passive candidate momentum
 to follow the exact discrete decay. This is still only source accounting; it is
 not a sponge layer, absorbing boundary, or physical boundary law.
 
+The first sponge-style accounting benchmark is
+``test_aethergrid_passive_momentum_predictor_sponge_64_step_benchmark``. It
+uses explicit boundary-layer damping masks in the source arrays so only masked
+candidate momentum cells decay. It still does not call boundary hooks or define
+absorbing or reflective boundary physics.
+
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.
 ``collect_native_angular_source_terms()`` sums those explicit terms into
