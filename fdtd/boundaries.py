@@ -202,7 +202,8 @@ class AetherAngularReflectiveBoundary(Boundary):
 
     This boundary reads native angular momentum and returns explicit source
     arrays only. It does not update clocks, momentum, torque, residuals,
-    candidates, or linear-sector state.
+    candidates, or linear-sector state. It must be registered on one outer
+    grid face so the adjacent interior slice can be used as the mirror state.
     """
 
     def __init__(

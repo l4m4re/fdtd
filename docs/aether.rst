@@ -87,6 +87,15 @@ For passive transport experiments, ``native_angular_momentum_rhs_t`` and
 ``S_L - ell*div(tau_native)``. ``native_angular_momentum_candidate_t`` and
 ``native_angular_momentum_candidate_p`` store one predicted next momentum state
 without promoting it into ``angular_momentum_t`` or ``angular_momentum_p``.
+``native_angular_linear_response`` stores a passive projection of staged native
+angular stress back toward the linear-sector layout without writing
+``angular_A`` or ``linear_a``.
+The charge-observable protocol is staged as passive bookkeeping too:
+``linear_charge_flux_candidate`` stores the normalized local linear integrand,
+``native_angular_charge_flux_t`` and ``native_angular_charge_flux_p`` store the
+two native angular loop-channel candidates, and
+``native_angular_charge_reduction`` stores one selected angular reduction for
+comparison.
 
 The helper methods that populate these fields are deliberately explicit:
 
@@ -103,11 +112,23 @@ The helper methods that populate these fields are deliberately explicit:
 - ``evaluate_native_angular_momentum_rhs()`` evaluates the passive transport
   right-hand side for ``dL/dt``; and
 - ``predict_native_angular_momentum_step()`` computes a candidate next native
-  angular momentum state without applying it.
+  angular momentum state without applying it; and
+- ``advance_native_angular_momentum_transport()`` promotes that candidate into
+  ``angular_momentum_t`` and ``angular_momentum_p`` only when called
+  explicitly;
+- ``evaluate_native_angular_linear_response()`` projects ``native_angular_tau``
+  through the current angular-to-linear bridge as a coupling diagnostic without
+  applying feedback;
+- ``evaluate_linear_charge_flux_candidate()`` evaluates
+  ``s_l*delta_t*eta*v*dA/A0`` as a local linear candidate;
+- ``evaluate_native_angular_charge_flux_candidates()`` evaluates the signed
+  ``delta_t*eta*ell*omega`` two-clock angular candidates; and
+- ``reduce_native_angular_charge_flux()`` compares the additive and
+  geometric-mean angular reductions without choosing which is physical.
 
 None of these helpers are called by ``step()``. They are diagnostics and
-staging points for the next architecture pass, not a completed angular update
-law.
+staging points for the next architecture pass, not a completed production
+angular update law.
 
 Residual diagnostics
 --------------------
@@ -126,16 +147,35 @@ The native torque projection can also be inspected spatially:
 
 The residual helper treats ``angular_torque_t`` and ``angular_torque_p`` as the
 ``dL/dt`` terms. Any external or boundary exchange must be supplied explicitly
-through the optional source arrays. The current implementation does not infer
-boundary exchange, advance angular momentum, or feed this residual back into
-``linear_a``. Previously collected source buffers are not read implicitly by
-the residual or predictor helpers.
+through the optional source arrays. The residual and predictor helpers do not
+infer boundary exchange or feed this residual back into ``linear_a``.
+Previously collected source buffers are not read implicitly by the residual or
+predictor helpers.
+The current spatial transport route is guarded by analytic stencil checks:
+uniform native torque must have zero divergence, and a linearly varying native
+torque field must reproduce the exact finite-difference pattern used by the
+collocated prototype before the residual is balanced.
+The first bounded propagated-transport check is still candidate-only: it
+derives staged native torque from successive momentum candidates, projects that
+torque, evaluates the metric divergence, and feeds only the next candidate
+state for a fixed number of iterations. It must remain finite and uncoupled
+from ``step()`` and ``linear_a``.
+``advance_native_angular_momentum_transport()`` is the corresponding opt-in
+transport advance. It promotes the predicted native angular momentum candidate
+through ``L_next = L + dt*(S_L - ell*div(tau_native))``, can collect explicit
+opt-in source and boundary hooks when requested, and can update the native
+clocks from positive inertia when requested. It is still not called by
+``step()`` and does not update the legacy bridge fields.
+The first linear/angular coupling gate is similarly passive:
+``evaluate_native_angular_linear_response()`` must match the current
+``angular_to_linear_bridge`` projection while leaving ``angular_A`` and
+``linear_a`` unchanged.
 
 Equivalently, the passive transport RHS is
 ``dL/dt = S_L - ell*div(tau_native)``, and the residual is the difference
 between the staged torque and that RHS. This is useful for bounded diagnostic
 tests because a caller can compare a staged torque law with the candidate
-transport law before any update rule is promoted.
+transport law before the update is allowed into the production timestep.
 
 The first bounded predictor benchmark is the balanced-source no-drift case in
 ``test_aethergrid_passive_momentum_predictor_balanced_64_step_benchmark``. It
@@ -144,6 +184,12 @@ metric-weighted torque divergence. The candidate momentum fields must stay
 finite and equal to the initial native angular momentum. This benchmark does
 not promote the predictor into ``step()`` and does not define physical boundary
 exchange.
+``test_aethergrid_native_angular_transport_advance_balanced_64_step_benchmark``
+applies the same no-drift gate to
+``advance_native_angular_momentum_transport()``. The helper may promote native
+angular momentum, but the promoted state must remain finite, equal to the
+initial state under balanced sources, and uncoupled from ``step()``,
+``angular_tau``, ``angular_A``, and ``linear_a``.
 
 The first unbalanced accounting benchmark is
 ``test_aethergrid_passive_momentum_predictor_damping_64_step_benchmark``. It
@@ -169,7 +215,9 @@ explicit in the source-term contract.
 ``AetherAngularReflectiveBoundary`` adds a passive mirror-relaxation hook: it
 uses the adjacent interior cell as the target state and contributes
 ``rate*(sign*L_mirror - L_boundary)`` on the registered boundary slice. This is
-still diagnostic source accounting, not a production wave-reflection boundary.
+valid only when registered on one outer grid face; non-outer slices are
+rejected. This is still diagnostic source accounting, not a production
+wave-reflection boundary.
 ``AetherGrid.evaluate_native_angular_kinetic_energy()`` adds the matching
 quadratic bookkeeping diagnostic ``0.5*L**2/I`` for the native angular
 momentum channels. It is used to check candidate-only source accounting, not to
@@ -192,6 +240,31 @@ The current native-angular boundary contract is intentionally narrow: boundary
 hooks may read native angular momentum and return source arrays, but they may
 not mutate clocks, momentum, torque fields, residuals, candidates, or
 linear-sector state.
+
+Charge-flux candidates
+----------------------
+
+The current bridge exposes the charge-flux protocol as explicit candidate
+bookkeeping, not as an experimental fit to measured charge.
+``evaluate_linear_charge_flux_candidate()`` computes the local linear candidate
+``s_l*delta_t*eta*v*dA/A0`` and stores it in
+``linear_charge_flux_candidate``. The caller must supply the control-surface
+measure and reference area when using anything other than the default local
+unit measure.
+
+``evaluate_native_angular_charge_flux_candidates()`` computes the native
+angular channel candidates
+``s_t*delta_t*eta*ell_t*omega_t*dtheta_t/(2*pi)/N_a`` and
+``s_p*delta_t*eta*ell_p*omega_p*dtheta_p/(2*pi)/N_a`` and stores them in
+``native_angular_charge_flux_t`` and ``native_angular_charge_flux_p``.
+``reduce_native_angular_charge_flux()`` then stores either ``q_t+q_p`` or
+``sqrt(q_t*q_p)`` in ``native_angular_charge_reduction``. The geometric-mean
+candidate requires the chosen signs to make the channel product non-negative.
+
+These helpers make ``A0``, ``delta_t``, signs, loop measures, angular
+normalization, and reduction mode explicit at the call site. They do not
+derive the elementary charge, select a physical charge polarity convention, or
+feed any charge observable back into the timestep update.
 
 Caveat
 ------

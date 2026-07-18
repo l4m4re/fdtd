@@ -5,7 +5,8 @@ from math import pi
 import numpy as np
 
 import fdtd
-from fdtd.operators import div
+from fdtd.aethergrid import eta
+from fdtd.operators import angular_to_linear_bridge, div
 
 
 class NativeAngularExchangeProbe:
@@ -84,6 +85,11 @@ def test_aethergrid_exposes_split_sector_aliases():
     assert grid.native_angular_momentum_rhs_p.shape == (5, 5, 5, 1)
     assert grid.native_angular_momentum_candidate_t.shape == (5, 5, 5, 1)
     assert grid.native_angular_momentum_candidate_p.shape == (5, 5, 5, 1)
+    assert grid.native_angular_linear_response.shape == (5, 5, 5, 3)
+    assert grid.linear_charge_flux_candidate.shape == (5, 5, 5, 3)
+    assert grid.native_angular_charge_flux_t.shape == (5, 5, 5, 1)
+    assert grid.native_angular_charge_flux_p.shape == (5, 5, 5, 1)
+    assert grid.native_angular_charge_reduction.shape == (5, 5, 5, 1)
 
 
 def test_aethergrid_exposes_default_native_angular_geometry():
@@ -113,6 +119,11 @@ def test_aethergrid_exposes_default_native_angular_geometry():
     assert not np.any(np.asarray(grid.native_angular_momentum_rhs_p))
     assert not np.any(np.asarray(grid.native_angular_momentum_candidate_t))
     assert not np.any(np.asarray(grid.native_angular_momentum_candidate_p))
+    assert not np.any(np.asarray(grid.native_angular_linear_response))
+    assert not np.any(np.asarray(grid.linear_charge_flux_candidate))
+    assert not np.any(np.asarray(grid.native_angular_charge_flux_t))
+    assert not np.any(np.asarray(grid.native_angular_charge_flux_p))
+    assert not np.any(np.asarray(grid.native_angular_charge_reduction))
 
 
 def test_aethergrid_evaluates_native_angular_clock_benchmark():
@@ -309,6 +320,280 @@ def test_aethergrid_evaluates_metric_weighted_torque_divergence():
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aethergrid_uniform_native_angular_torque_has_zero_divergence():
+    grid = fdtd.AetherGrid(shape=(5, 5, 5))
+    grid.native_angular_tau[:, :, :, 0] = 2.0
+    grid.native_angular_tau[:, :, :, 1] = -3.0
+    grid.native_angular_tau[:, :, :, 2] = 5.0
+
+    diagnostic = grid.evaluate_native_angular_torque_divergence()
+    metric_t, metric_p = grid.evaluate_native_angular_metric_divergence()
+
+    np.testing.assert_allclose(np.asarray(diagnostic), 0.0)
+    np.testing.assert_allclose(np.asarray(metric_t), 0.0)
+    np.testing.assert_allclose(np.asarray(metric_p), 0.0)
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aethergrid_linear_native_torque_transport_uses_current_stencil():
+    grid = fdtd.AetherGrid(shape=(5, 5, 5))
+    x_pattern = np.array([1.0, 2.0, 2.0, 1.0, 0.0])
+    y_pattern = np.array([2.0, 4.0, 4.0, 2.0, 0.0])
+    z_pattern = np.array([3.0, 6.0, 6.0, 3.0, 0.0])
+    expected_divergence = (
+        x_pattern[:, None, None]
+        + y_pattern[None, :, None]
+        + z_pattern[None, None, :]
+    )[:, :, :, None]
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 3.0
+    grid.angular_torque_t[:, :, :, 0] = 0.25
+    grid.angular_torque_p[:, :, :, 0] = 0.5
+    for x in range(5):
+        grid.native_angular_tau[x, :, :, 0] = x
+    for y in range(5):
+        grid.native_angular_tau[:, y, :, 1] = 2.0 * y
+    for z in range(5):
+        grid.native_angular_tau[:, :, z, 2] = 3.0 * z
+
+    diagnostic = grid.evaluate_native_angular_torque_divergence()
+    metric_t, metric_p = grid.evaluate_native_angular_metric_divergence()
+    source_t = np.asarray(grid.angular_torque_t) + np.asarray(metric_t)
+    source_p = np.asarray(grid.angular_torque_p) + np.asarray(metric_p)
+    residual_t, residual_p = grid.evaluate_native_angular_transport_residual(
+        source_t=source_t,
+        source_p=source_p,
+    )
+
+    np.testing.assert_allclose(np.asarray(diagnostic), expected_divergence)
+    np.testing.assert_allclose(np.asarray(metric_t), 2.0 * expected_divergence)
+    np.testing.assert_allclose(np.asarray(metric_p), 3.0 * expected_divergence)
+    np.testing.assert_allclose(np.asarray(residual_t), 0.0)
+    np.testing.assert_allclose(np.asarray(residual_p), 0.0)
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aethergrid_candidate_only_native_torque_transport_loop_is_bounded():
+    grid = fdtd.AetherGrid(shape=(5, 5, 5))
+    delta = 0.01
+    steps = 32
+    grid.ell_t[:, :, :, 0] = 0.1
+    grid.ell_p[:, :, :, 0] = 0.1
+    grid.angular_momentum_t[:, :, :, 0] = 1.0
+    grid.angular_momentum_p[:, :, :, 0] = 1.0
+    initial_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_p = np.asarray(grid.angular_momentum_p).copy()
+    initial_rate_t = np.zeros((5, 5, 5, 1))
+    initial_rate_p = np.zeros((5, 5, 5, 1))
+    initial_rate_t[2, 2, 2, 0] = 0.2
+    initial_rate_p[2, 2, 2, 0] = -0.1
+    previous_t = initial_t - delta * initial_rate_t
+    previous_p = initial_p - delta * initial_rate_p
+    max_excursion = 0.0
+    nonzero_transport_seen = False
+
+    for _ in range(steps):
+        grid.update_native_angular_torque(
+            previous_momentum_t=previous_t,
+            previous_momentum_p=previous_p,
+            delta=delta,
+        )
+        grid.project_native_angular_torque()
+        metric_t, metric_p = grid.evaluate_native_angular_metric_divergence()
+        nonzero_transport_seen = nonzero_transport_seen or np.any(
+            np.asarray(metric_t)
+        ) or np.any(np.asarray(metric_p))
+        candidate_t, candidate_p = grid.predict_native_angular_momentum_step(
+            delta=delta,
+        )
+        candidate_t = np.asarray(candidate_t).copy()
+        candidate_p = np.asarray(candidate_p).copy()
+
+        assert np.all(np.isfinite(candidate_t))
+        assert np.all(np.isfinite(candidate_p))
+        max_excursion = max(
+            max_excursion,
+            float(np.max(np.abs(candidate_t - initial_t))),
+            float(np.max(np.abs(candidate_p - initial_p))),
+        )
+
+        # Candidate-only propagated-transport benchmark; production dynamics
+        # still do not call or apply the predictor.
+        previous_t = np.asarray(grid.angular_momentum_t).copy()
+        previous_p = np.asarray(grid.angular_momentum_p).copy()
+        grid.angular_momentum_t = grid.native_angular_momentum_candidate_t
+        grid.angular_momentum_p = grid.native_angular_momentum_candidate_p
+
+    assert nonzero_transport_seen
+    assert 0.0 < max_excursion < 1.0e-3
+    assert grid.time_steps_passed == 0
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+    assert not np.any(np.asarray(grid.native_angular_source_t))
+    assert not np.any(np.asarray(grid.native_angular_source_p))
+
+
+def test_aethergrid_evaluates_passive_native_angular_linear_response():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    metric_length = np.ones((4, 4, 4, 1)) * 0.25
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+    grid.native_angular_tau[1, 2, 1, 2] = 0.5
+    scale = 0.75
+
+    response = grid.evaluate_native_angular_linear_response(
+        metric_length=metric_length,
+        scale=scale,
+    )
+
+    expected = scale * angular_to_linear_bridge(
+        grid.native_angular_tau,
+        metric_length=metric_length,
+    )
+    np.testing.assert_allclose(np.asarray(response), np.asarray(expected))
+    assert response is grid.native_angular_linear_response
+    assert np.any(np.asarray(response))
+    assert not np.any(np.asarray(grid.angular_A))
+    assert not np.any(np.asarray(grid.linear_a))
+    assert grid.time_steps_passed == 0
+
+
+def test_aethergrid_native_angular_linear_response_is_coupling_diagnostic_only():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    grid.linear_a[:, :, :, 0] = 7.0
+    grid.angular_A[:, :, :, 1] = 11.0
+    initial_linear_a = np.asarray(grid.linear_a).copy()
+    initial_angular_A = np.asarray(grid.angular_A).copy()
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+
+    response = grid.evaluate_native_angular_linear_response(scale=0.5)
+
+    assert np.any(np.asarray(response))
+    np.testing.assert_allclose(np.asarray(grid.linear_a), initial_linear_a)
+    np.testing.assert_allclose(np.asarray(grid.angular_A), initial_angular_A)
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert grid.time_steps_passed == 0
+
+
+def test_aethergrid_evaluates_linear_charge_flux_candidate():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    delta_t = 0.2
+    area_measure = np.ones((3, 3, 3, 1)) * 0.25
+    grid.linear_v[1, 1, 1] = [2.0, -3.0, 4.0]
+
+    candidate = grid.evaluate_linear_charge_flux_candidate(
+        delta_t=delta_t,
+        area_measure=area_measure,
+        normalization_area=0.5,
+        sign=-1.0,
+    )
+
+    expected = np.zeros((3, 3, 3, 3))
+    expected[1, 1, 1] = (
+        -1.0 * delta_t * eta * np.array([2.0, -3.0, 4.0]) * 0.25 / 0.5
+    )
+    np.testing.assert_allclose(np.asarray(candidate), expected)
+    assert candidate is grid.linear_charge_flux_candidate
+    assert not np.any(np.asarray(grid.native_angular_charge_flux_t))
+    assert not np.any(np.asarray(grid.native_angular_charge_flux_p))
+    assert grid.time_steps_passed == 0
+
+
+def test_aethergrid_linear_charge_flux_requires_reference_area():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+
+    try:
+        grid.evaluate_linear_charge_flux_candidate(normalization_area=0.0)
+    except ValueError as exc:
+        assert "normalization_area" in str(exc)
+    else:
+        raise AssertionError("expected reference-area validation")
+
+
+def test_aethergrid_evaluates_native_angular_charge_flux_candidates():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+    delta_t = 0.1
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 5.0
+    grid.omega_t[:, :, :, 0] = 3.0
+    grid.omega_p[:, :, :, 0] = 7.0
+    loop_t = np.ones((2, 2, 2, 1)) * 0.25
+    loop_p = np.ones((2, 2, 2, 1)) * 0.5
+
+    q_t, q_p = grid.evaluate_native_angular_charge_flux_candidates(
+        delta_t=delta_t,
+        loop_measure_t=loop_t,
+        loop_measure_p=loop_p,
+        angular_normalization=2.0,
+        sign_t=-1.0,
+        sign_p=1.0,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(q_t),
+        -1.0 * delta_t * eta * 2.0 * 3.0 * 0.25 / 2.0,
+    )
+    np.testing.assert_allclose(
+        np.asarray(q_p),
+        delta_t * eta * 5.0 * 7.0 * 0.5 / 2.0,
+    )
+    assert q_t is grid.native_angular_charge_flux_t
+    assert q_p is grid.native_angular_charge_flux_p
+    assert not np.any(np.asarray(grid.linear_charge_flux_candidate))
+    assert grid.time_steps_passed == 0
+
+
+def test_aethergrid_native_angular_charge_flux_requires_normalization():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+
+    try:
+        grid.evaluate_native_angular_charge_flux_candidates(
+            angular_normalization=0.0,
+        )
+    except ValueError as exc:
+        assert "angular_normalization" in str(exc)
+    else:
+        raise AssertionError("expected angular-normalization validation")
+
+
+def test_aethergrid_reduces_native_angular_charge_flux_candidates():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+    grid.native_angular_charge_flux_t[:, :, :, 0] = 4.0
+    grid.native_angular_charge_flux_p[:, :, :, 0] = 9.0
+
+    additive = grid.reduce_native_angular_charge_flux(mode="additive")
+    geometric = grid.reduce_native_angular_charge_flux(mode="geometric_mean")
+
+    np.testing.assert_allclose(np.asarray(additive), 13.0)
+    np.testing.assert_allclose(np.asarray(geometric), 6.0)
+    assert geometric is grid.native_angular_charge_reduction
+    assert not np.any(np.asarray(grid.angular_A))
+    assert not np.any(np.asarray(grid.linear_a))
+    assert grid.time_steps_passed == 0
+
+
+def test_aethergrid_rejects_invalid_native_angular_charge_reduction():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+    grid.native_angular_charge_flux_t[:, :, :, 0] = -4.0
+    grid.native_angular_charge_flux_p[:, :, :, 0] = 9.0
+
+    try:
+        grid.reduce_native_angular_charge_flux(mode="geometric_mean")
+    except ValueError as exc:
+        assert "non-negative" in str(exc)
+    else:
+        raise AssertionError("expected geometric-mean sign validation")
+
+    try:
+        grid.reduce_native_angular_charge_flux(mode="unknown")
+    except ValueError as exc:
+        assert "mode" in str(exc)
+    else:
+        raise AssertionError("expected reduction-mode validation")
+
+
 def test_aethergrid_evaluates_native_angular_transport_residual():
     grid = fdtd.AetherGrid(shape=(4, 4, 4))
     grid.ell_t[:, :, :, 0] = 2.0
@@ -429,6 +714,135 @@ def test_aethergrid_predicts_passive_native_angular_momentum_step():
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aethergrid_advances_native_angular_momentum_transport_opt_in():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    delta = 0.125
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 3.0
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+    source_t = np.ones((4, 4, 4, 1)) * 0.1
+    source_p = np.ones((4, 4, 4, 1)) * 0.2
+    initial_momentum_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_momentum_p = np.asarray(grid.angular_momentum_p).copy()
+
+    momentum_t, momentum_p = grid.advance_native_angular_momentum_transport(
+        delta=delta,
+        source_t=source_t,
+        source_p=source_p,
+    )
+    expected_divergence = np.asarray(div(grid.native_angular_tau))
+    expected_t = initial_momentum_t + delta * (
+        source_t - 2.0 * expected_divergence
+    )
+    expected_p = initial_momentum_p + delta * (
+        source_p - 3.0 * expected_divergence
+    )
+
+    np.testing.assert_allclose(np.asarray(momentum_t), expected_t)
+    np.testing.assert_allclose(np.asarray(momentum_p), expected_p)
+    assert momentum_t is grid.angular_momentum_t
+    assert momentum_p is grid.angular_momentum_p
+    assert momentum_t is grid.native_angular_momentum_candidate_t
+    assert momentum_p is grid.native_angular_momentum_candidate_p
+    assert grid.time_steps_passed == 0
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.angular_A))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aethergrid_transport_advance_can_collect_source_terms():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    delta = 0.2
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    explicit_t = np.ones((3, 3, 3, 1)) * 0.1
+    explicit_p = np.ones((3, 3, 3, 1)) * 0.2
+    source_t = np.ones((3, 3, 3, 1)) * 0.3
+    source_p = np.ones((3, 3, 3, 1)) * 0.4
+    boundary_t = np.ones((3, 3, 3, 1)) * 0.5
+    boundary_p = np.ones((3, 3, 3, 1)) * 0.6
+    grid[1, 1, 1] = NativeAngularExchangeProbe(
+        source_t,
+        source_p,
+        "sources",
+    )
+    grid[0, :, :] = NativeAngularExchangeProbe(
+        boundary_t,
+        boundary_p,
+        "boundaries",
+    )
+    initial_momentum_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_momentum_p = np.asarray(grid.angular_momentum_p).copy()
+
+    momentum_t, momentum_p = grid.advance_native_angular_momentum_transport(
+        delta=delta,
+        source_t=explicit_t,
+        source_p=explicit_p,
+        collect_sources=True,
+    )
+
+    collected_t = source_t + boundary_t
+    collected_p = source_p + boundary_p
+    np.testing.assert_allclose(np.asarray(grid.native_angular_source_t), collected_t)
+    np.testing.assert_allclose(np.asarray(grid.native_angular_source_p), collected_p)
+    np.testing.assert_allclose(
+        np.asarray(momentum_t),
+        initial_momentum_t + delta * (explicit_t + collected_t),
+    )
+    np.testing.assert_allclose(
+        np.asarray(momentum_p),
+        initial_momentum_p + delta * (explicit_p + collected_p),
+    )
+    assert not np.any(np.asarray(grid.native_angular_tau))
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aethergrid_transport_advance_can_update_native_clocks():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+    delta = 0.25
+    grid.angular_inertia_t[:, :, :, 0] = 2.0
+    grid.angular_inertia_p[:, :, :, 0] = 4.0
+    grid.angular_momentum_t[:, :, :, 0] = 1.0
+    grid.angular_momentum_p[:, :, :, 0] = 2.0
+    source_t = np.ones((2, 2, 2, 1)) * 0.5
+    source_p = np.ones((2, 2, 2, 1)) * 1.0
+
+    momentum_t, momentum_p = grid.advance_native_angular_momentum_transport(
+        delta=delta,
+        source_t=source_t,
+        source_p=source_p,
+        update_clocks=True,
+    )
+
+    np.testing.assert_allclose(np.asarray(momentum_t), 1.0 + delta * 0.5)
+    np.testing.assert_allclose(np.asarray(momentum_p), 2.0 + delta * 1.0)
+    np.testing.assert_allclose(np.asarray(grid.omega_t), np.asarray(momentum_t) / 2.0)
+    np.testing.assert_allclose(np.asarray(grid.omega_p), np.asarray(momentum_p) / 4.0)
+
+
+def test_aethergrid_transport_advance_requires_inertia_for_clock_update():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+    grid.angular_inertia_t[:, :, :, 0] = 1.0
+    grid.angular_inertia_p[:, :, :, 0] = 0.0
+    grid.angular_momentum_t[:, :, :, 0] = 1.0
+    grid.angular_momentum_p[:, :, :, 0] = 2.0
+    initial_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_p = np.asarray(grid.angular_momentum_p).copy()
+
+    try:
+        grid.advance_native_angular_momentum_transport(update_clocks=True)
+    except ValueError as exc:
+        assert "inertia" in str(exc)
+    else:
+        raise AssertionError("expected positive-inertia validation")
+    np.testing.assert_allclose(np.asarray(grid.angular_momentum_t), initial_t)
+    np.testing.assert_allclose(np.asarray(grid.angular_momentum_p), initial_p)
+
+
 def test_aethergrid_residual_and_predictor_ignore_collected_sources_by_default():
     grid = fdtd.AetherGrid(shape=(4, 4, 4))
     delta = 0.125
@@ -519,6 +933,39 @@ def test_aethergrid_passive_momentum_predictor_balanced_64_step_benchmark():
     np.testing.assert_allclose(np.asarray(grid.angular_momentum_t), initial_momentum_t)
     np.testing.assert_allclose(np.asarray(grid.angular_momentum_p), initial_momentum_p)
     assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aethergrid_native_angular_transport_advance_balanced_64_step_benchmark():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    delta = 0.05
+    steps = 64
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 3.0
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+    metric_t, metric_p = grid.evaluate_native_angular_metric_divergence()
+    source_t = np.asarray(metric_t).copy()
+    source_p = np.asarray(metric_p).copy()
+    initial_momentum_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_momentum_p = np.asarray(grid.angular_momentum_p).copy()
+
+    for _ in range(steps):
+        momentum_t, momentum_p = grid.advance_native_angular_momentum_transport(
+            delta=delta,
+            source_t=source_t,
+            source_p=source_p,
+        )
+        np.testing.assert_allclose(np.asarray(momentum_t), initial_momentum_t)
+        np.testing.assert_allclose(np.asarray(momentum_p), initial_momentum_p)
+        assert np.all(np.isfinite(np.asarray(momentum_t)))
+        assert np.all(np.isfinite(np.asarray(momentum_p)))
+
+    assert grid.time_steps_passed == 0
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.angular_A))
     assert not np.any(np.asarray(grid.linear_a))
 
 
@@ -806,6 +1253,101 @@ def test_aether_angular_reflective_boundary_exposes_mirror_exchange_terms():
     np.testing.assert_allclose(np.asarray(source_p), expected_p)
     assert not np.any(np.asarray(grid.angular_tau))
     assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aether_angular_reflective_boundary_supports_all_outer_faces():
+    cases = [
+        (
+            (0, slice(None), slice(None)),
+            (0, slice(None), slice(None), 0),
+            (1, slice(None), slice(None), 0),
+        ),
+        (
+            (-1, slice(None), slice(None)),
+            (-1, slice(None), slice(None), 0),
+            (-2, slice(None), slice(None), 0),
+        ),
+        (
+            (slice(None), 0, slice(None)),
+            (slice(None), 0, slice(None), 0),
+            (slice(None), 1, slice(None), 0),
+        ),
+        (
+            (slice(None), -1, slice(None)),
+            (slice(None), -1, slice(None), 0),
+            (slice(None), -2, slice(None), 0),
+        ),
+        (
+            (slice(None), slice(None), 0),
+            (slice(None), slice(None), 0, 0),
+            (slice(None), slice(None), 1, 0),
+        ),
+        (
+            (slice(None), slice(None), -1),
+            (slice(None), slice(None), -1, 0),
+            (slice(None), slice(None), -2, 0),
+        ),
+    ]
+
+    for registration_key, boundary_slice, mirror_slice in cases:
+        grid = fdtd.AetherGrid(shape=(4, 4, 4))
+        response_rate_t = 20.0
+        response_rate_p = 10.0
+        grid.angular_momentum_t[:, :, :, 0] = 0.75
+        grid.angular_momentum_p[:, :, :, 0] = 1.25
+        grid.angular_momentum_t[boundary_slice] = 0.5
+        grid.angular_momentum_p[boundary_slice] = 0.25
+        grid[registration_key] = fdtd.AetherAngularReflectiveBoundary(
+            response_rate_t=response_rate_t,
+            response_rate_p=response_rate_p,
+            sign_t=-1.0,
+            sign_p=1.0,
+        )
+
+        source_t, source_p = grid.collect_native_angular_source_terms()
+
+        expected_t = np.zeros((4, 4, 4, 1))
+        expected_p = np.zeros((4, 4, 4, 1))
+        expected_t[boundary_slice] = response_rate_t * (
+            -grid.angular_momentum_t[mirror_slice]
+            - grid.angular_momentum_t[boundary_slice]
+        )
+        expected_p[boundary_slice] = response_rate_p * (
+            grid.angular_momentum_p[mirror_slice]
+            - grid.angular_momentum_p[boundary_slice]
+        )
+        np.testing.assert_allclose(np.asarray(source_t), expected_t)
+        np.testing.assert_allclose(np.asarray(source_p), expected_p)
+        assert not np.any(np.asarray(grid.angular_tau))
+        assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aether_angular_reflective_boundary_rejects_non_outer_face():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    grid[1, :, :] = fdtd.AetherAngularReflectiveBoundary(
+        response_rate_t=20.0,
+        response_rate_p=10.0,
+    )
+
+    try:
+        grid.collect_native_angular_source_terms()
+    except ValueError as exc:
+        assert "single outer grid face" in str(exc)
+    else:
+        raise AssertionError("expected outer-face validation")
+
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    grid[:, :, :] = fdtd.AetherAngularReflectiveBoundary(
+        response_rate_t=20.0,
+        response_rate_p=10.0,
+    )
+
+    try:
+        grid.collect_native_angular_source_terms()
+    except ValueError as exc:
+        assert "single outer grid face" in str(exc)
+    else:
+        raise AssertionError("expected outer-face validation")
 
 
 def test_aethergrid_passive_momentum_predictor_reflective_boundary_hook_64_step():
@@ -1250,6 +1792,11 @@ def test_aethergrid_reset_preserves_native_angular_geometry():
     grid.evaluate_native_angular_metric_divergence()
     grid.evaluate_native_angular_transport_residual()
     grid.predict_native_angular_momentum_step(delta=0.2)
+    grid.evaluate_native_angular_linear_response()
+    grid.linear_v[1, 1, 1, 0] = 1.0
+    grid.evaluate_linear_charge_flux_candidate(delta_t=0.2)
+    grid.evaluate_native_angular_charge_flux_candidates(delta_t=0.2)
+    grid.reduce_native_angular_charge_flux(mode="additive")
     grid.native_angular_source_t[1, 1, 1, 0] = 6.0
     grid.native_angular_source_p[1, 1, 1, 0] = 7.0
 
@@ -1277,6 +1824,11 @@ def test_aethergrid_reset_preserves_native_angular_geometry():
     assert not np.any(np.asarray(grid.native_angular_momentum_rhs_p))
     assert not np.any(np.asarray(grid.native_angular_momentum_candidate_t))
     assert not np.any(np.asarray(grid.native_angular_momentum_candidate_p))
+    assert not np.any(np.asarray(grid.native_angular_linear_response))
+    assert not np.any(np.asarray(grid.linear_charge_flux_candidate))
+    assert not np.any(np.asarray(grid.native_angular_charge_flux_t))
+    assert not np.any(np.asarray(grid.native_angular_charge_flux_p))
+    assert not np.any(np.asarray(grid.native_angular_charge_reduction))
 
 
 def test_aether_point_source_injects_native_velocity():

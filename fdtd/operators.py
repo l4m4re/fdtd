@@ -235,8 +235,9 @@ def div(v: Tensorlike) -> Tensorlike:
         Scalar field with shape ``(Nx, Ny, Nz, 1)``.
 
     Notes:
-        The current implementation uses centered finite differences arranged to
-        stay compatible with the package's simple collocated aether prototype.
+        The current implementation uses a simple local finite-difference
+        stencil arranged to stay compatible with the package's collocated
+        aether prototype.
     """
     div_v = bd.zeros((v.shape[0], v.shape[1], v.shape[2], 1), dtype=v.dtype)
 

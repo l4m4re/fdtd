@@ -236,6 +236,11 @@ class AetherGrid:
         self.native_angular_momentum_candidate_p = bd.zeros(
             (self.Nx, self.Ny, self.Nz, 1)
         )
+        self.native_angular_linear_response = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.linear_charge_flux_candidate = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
+        self.native_angular_charge_flux_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_charge_flux_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_charge_reduction = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
 
         self._sync_public_aliases()
         
@@ -888,6 +893,253 @@ class AetherGrid:
             self.native_angular_momentum_candidate_p,
         )
 
+    def advance_native_angular_momentum_transport(
+        self,
+        delta=None,
+        source_t=None,
+        source_p=None,
+        collect_sources=False,
+        include_sources=True,
+        include_boundaries=True,
+        update_clocks=False,
+    ):
+        """Advance native angular momentum through the passive transport law.
+
+        Args:
+            delta: Time interval for the update. Defaults to the grid timestep.
+            source_t: Optional explicit toroidal source term.
+            source_p: Optional explicit poloidal source term.
+            collect_sources: If true, add current opt-in scene source and
+                boundary hooks from ``collect_native_angular_source_terms()``.
+            include_sources: Passed to ``collect_native_angular_source_terms``
+                when ``collect_sources`` is true.
+            include_boundaries: Passed to ``collect_native_angular_source_terms``
+                when ``collect_sources`` is true.
+            update_clocks: If true, update ``omega_t`` and ``omega_p`` from the
+                promoted momentum and positive native inertia.
+
+        Returns:
+            ``(angular_momentum_t, angular_momentum_p)`` after promotion.
+
+        Notes:
+            This is the first explicit opt-in transport advance for the native
+            angular staging layer:
+
+            ``L_next = L + delta*(S_L - ell*div(tau_native))``.
+
+            It is still not called by ``step()``, does not update the legacy
+            bridge fields, and does not define physical boundary semantics.
+        """
+
+        if update_clocks:
+            if bd.max(self.angular_inertia_t <= 0) or bd.max(
+                self.angular_inertia_p <= 0
+            ):
+                raise ValueError(
+                    "native angular inertia must be positive to update clocks"
+                )
+
+        if collect_sources:
+            collected_t, collected_p = self.collect_native_angular_source_terms(
+                include_sources=include_sources,
+                include_boundaries=include_boundaries,
+            )
+            if source_t is None:
+                source_t = collected_t
+            else:
+                source_t = bd.asarray(source_t) + collected_t
+            if source_p is None:
+                source_p = collected_p
+            else:
+                source_p = bd.asarray(source_p) + collected_p
+
+        candidate_t, candidate_p = self.predict_native_angular_momentum_step(
+            delta=delta,
+            source_t=source_t,
+            source_p=source_p,
+        )
+        self.angular_momentum_t = candidate_t
+        self.angular_momentum_p = candidate_p
+
+        if update_clocks:
+            self.omega_t = self.angular_momentum_t / self.angular_inertia_t
+            self.omega_p = self.angular_momentum_p / self.angular_inertia_p
+
+        return self.angular_momentum_t, self.angular_momentum_p
+
+    def evaluate_native_angular_linear_response(
+        self,
+        metric_length=None,
+        scale=1.0,
+    ):
+        """Project native angular stress into a passive linear response.
+
+        Args:
+            metric_length: Optional angular metric length for the bridge.
+                Defaults to no additional weighting.
+            scale: Optional scalar multiplier for candidate comparisons.
+
+        Returns:
+            ``native_angular_linear_response`` with shape ``(Nx, Ny, Nz, 3)``.
+
+        Notes:
+            This is a coupling diagnostic only. It projects
+            ``native_angular_tau`` through the current ``angular_to_linear``
+            bridge but does not write ``angular_A``, ``linear_a``, or any
+            production update state.
+        """
+
+        self.native_angular_linear_response = scale * angular_to_linear_bridge(
+            self.native_angular_tau,
+            metric_length=metric_length,
+        )
+        return self.native_angular_linear_response
+
+    def evaluate_linear_charge_flux_candidate(
+        self,
+        delta_t=None,
+        area_measure=1.0,
+        normalization_area=1.0,
+        sign=1.0,
+        field=None,
+    ):
+        """Evaluate the local linear charge-flux candidate.
+
+        Args:
+            delta_t: Time scale used in ``Q_q = delta_t*eta*v``. Defaults to
+                the grid timestep.
+            area_measure: Optional dimensionless ``dA``-like weight or array.
+                Use together with ``normalization_area`` to represent
+                ``dA/A0``.
+            normalization_area: Reference area ``A0``. It must be chosen by
+                geometry, not by fitting measured charge.
+            sign: Explicit linear-channel polarity convention.
+            field: Optional velocity-like vector field. Defaults to
+                ``linear_v``.
+
+        Returns:
+            ``linear_charge_flux_candidate`` with shape ``(Nx, Ny, Nz, 3)``.
+
+        Notes:
+            This is only the simulator-facing candidate for the integrand of
+            ``q_l``. It does not integrate over a surface, choose ``A0``, or
+            derive a measured scalar charge.
+        """
+
+        if delta_t is None:
+            delta_t = self.time_step
+        if normalization_area == 0:
+            raise ValueError("normalization_area must be non-zero")
+
+        if field is None:
+            field = self.linear_v
+        else:
+            field = bd.asarray(field)
+        area_measure = bd.asarray(area_measure)
+
+        self.linear_charge_flux_candidate = (
+            sign * delta_t * eta * field * area_measure / normalization_area
+        )
+        return self.linear_charge_flux_candidate
+
+    def evaluate_native_angular_charge_flux_candidates(
+        self,
+        delta_t=None,
+        loop_measure_t=1.0,
+        loop_measure_p=1.0,
+        angular_normalization=1.0,
+        sign_t=1.0,
+        sign_p=1.0,
+    ):
+        """Evaluate native two-clock angular charge-flux candidates.
+
+        Args:
+            delta_t: Time scale used in ``Q_q = delta_t*eta*ell*omega``.
+                Defaults to the grid timestep.
+            loop_measure_t: Dimensionless toroidal loop measure, such as
+                ``dtheta_t/(2*pi)``.
+            loop_measure_p: Dimensionless poloidal loop measure, such as
+                ``dtheta_p/(2*pi)``.
+            angular_normalization: Candidate angular normalization ``N_a``.
+                It must be chosen independently of measured charge.
+            sign_t: Explicit toroidal polarity convention.
+            sign_p: Explicit poloidal polarity convention.
+
+        Returns:
+            ``(native_angular_charge_flux_t, native_angular_charge_flux_p)``.
+
+        Notes:
+            This exposes the two native angular channels only. It does not
+            choose the final scalar angular reduction and is not coupled into
+            ``step()``.
+        """
+
+        if delta_t is None:
+            delta_t = self.time_step
+        if angular_normalization == 0:
+            raise ValueError("angular_normalization must be non-zero")
+
+        loop_measure_t = bd.asarray(loop_measure_t)
+        loop_measure_p = bd.asarray(loop_measure_p)
+        self.native_angular_charge_flux_t = (
+            sign_t
+            * delta_t
+            * eta
+            * self.ell_t
+            * self.omega_t
+            * loop_measure_t
+            / angular_normalization
+        )
+        self.native_angular_charge_flux_p = (
+            sign_p
+            * delta_t
+            * eta
+            * self.ell_p
+            * self.omega_p
+            * loop_measure_p
+            / angular_normalization
+        )
+        return (
+            self.native_angular_charge_flux_t,
+            self.native_angular_charge_flux_p,
+        )
+
+    def reduce_native_angular_charge_flux(self, mode="additive"):
+        """Reduce the staged angular charge candidates to one scalar field.
+
+        Args:
+            mode: ``"additive"`` for ``q_t+q_p`` or ``"geometric_mean"`` for
+                ``sqrt(q_t*q_p)``.
+
+        Returns:
+            ``native_angular_charge_reduction``.
+
+        Notes:
+            This is an explicit comparison helper for candidate observables.
+            It does not decide which reduction is physical. The geometric-mean
+            candidate requires a non-negative channel product after the caller
+            has chosen signs.
+        """
+
+        if mode == "additive":
+            self.native_angular_charge_reduction = (
+                self.native_angular_charge_flux_t + self.native_angular_charge_flux_p
+            )
+        elif mode == "geometric_mean":
+            product = (
+                self.native_angular_charge_flux_t * self.native_angular_charge_flux_p
+            )
+            if bd.max(product < 0):
+                raise ValueError(
+                    "geometric_mean reduction requires non-negative q_t*q_p"
+                )
+            self.native_angular_charge_reduction = product ** 0.5
+        else:
+            raise ValueError(
+                "mode must be 'additive' or 'geometric_mean'"
+            )
+        return self.native_angular_charge_reduction
+
     def advance_linear_sector(self):
         """Advance the primary linear state with a short Taylor step."""
 
@@ -988,6 +1240,11 @@ class AetherGrid:
         self.native_angular_momentum_rhs_p *= 0.0
         self.native_angular_momentum_candidate_t *= 0.0
         self.native_angular_momentum_candidate_p *= 0.0
+        self.native_angular_linear_response *= 0.0
+        self.linear_charge_flux_candidate *= 0.0
+        self.native_angular_charge_flux_t *= 0.0
+        self.native_angular_charge_flux_p *= 0.0
+        self.native_angular_charge_reduction *= 0.0
 
         self._sync_public_aliases()
         self.time_steps_passed = 0
