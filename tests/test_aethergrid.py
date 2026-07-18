@@ -8,6 +8,25 @@ import fdtd
 from fdtd.operators import div
 
 
+class NativeAngularExchangeProbe:
+    """Minimal scene element exposing explicit native angular exchange terms."""
+
+    def __init__(self, source_t, source_p, registry):
+        self.source_t = source_t
+        self.source_p = source_p
+        self.registry = registry
+
+    def _register_grid(self, grid, x, y, z):
+        self.grid = grid
+        self.x = x
+        self.y = y
+        self.z = z
+        getattr(grid, self.registry).append(self)
+
+    def native_angular_source_terms(self):
+        return self.source_t, self.source_p
+
+
 def test_aethergrid_is_exported():
     grid = fdtd.AetherGrid(shape=(5, 5, 5))
     assert isinstance(grid, fdtd.AetherGrid)
@@ -59,6 +78,8 @@ def test_aethergrid_exposes_split_sector_aliases():
     assert grid.native_angular_tau_metric_divergence_p.shape == (5, 5, 5, 1)
     assert grid.native_angular_transport_residual_t.shape == (5, 5, 5, 1)
     assert grid.native_angular_transport_residual_p.shape == (5, 5, 5, 1)
+    assert grid.native_angular_source_t.shape == (5, 5, 5, 1)
+    assert grid.native_angular_source_p.shape == (5, 5, 5, 1)
 
 
 def test_aethergrid_exposes_default_native_angular_geometry():
@@ -82,6 +103,8 @@ def test_aethergrid_exposes_default_native_angular_geometry():
     assert not np.any(np.asarray(grid.native_angular_tau_metric_divergence_p))
     assert not np.any(np.asarray(grid.native_angular_transport_residual_t))
     assert not np.any(np.asarray(grid.native_angular_transport_residual_p))
+    assert not np.any(np.asarray(grid.native_angular_source_t))
+    assert not np.any(np.asarray(grid.native_angular_source_p))
 
 
 def test_aethergrid_evaluates_native_angular_clock_benchmark():
@@ -333,6 +356,94 @@ def test_aethergrid_transport_residual_is_bounded_and_passive_when_repeated():
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aethergrid_collects_explicit_native_angular_source_terms():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    source_t = np.ones((3, 3, 3, 1)) * 0.25
+    source_p = np.ones((3, 3, 3, 1)) * 0.5
+    boundary_t = np.ones((3, 3, 3, 1)) * 0.75
+    boundary_p = np.ones((3, 3, 3, 1)) * 1.25
+
+    grid[1, 1, 1] = NativeAngularExchangeProbe(source_t, source_p, "sources")
+    grid[0, :, :] = NativeAngularExchangeProbe(
+        boundary_t,
+        boundary_p,
+        "boundaries",
+    )
+
+    collected_t, collected_p = grid.collect_native_angular_source_terms()
+
+    np.testing.assert_allclose(np.asarray(collected_t), 1.0)
+    np.testing.assert_allclose(np.asarray(collected_p), 1.75)
+    assert collected_t is grid.native_angular_source_t
+    assert collected_p is grid.native_angular_source_p
+    assert grid.time_steps_passed == 0
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aethergrid_collected_native_angular_sources_can_drive_residual():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 3.0
+    grid.angular_torque_t[:, :, :, 0] = 0.25
+    grid.angular_torque_p[:, :, :, 0] = 0.5
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+    metric_t, metric_p = grid.evaluate_native_angular_metric_divergence()
+    source_t = np.asarray(grid.angular_torque_t) + np.asarray(metric_t)
+    source_p = np.asarray(grid.angular_torque_p) + np.asarray(metric_p)
+    grid[0, :, :] = NativeAngularExchangeProbe(
+        source_t,
+        source_p,
+        "boundaries",
+    )
+
+    collected_t, collected_p = grid.collect_native_angular_source_terms()
+    residual_t, residual_p = grid.evaluate_native_angular_transport_residual(
+        source_t=collected_t,
+        source_p=collected_p,
+    )
+
+    np.testing.assert_allclose(np.asarray(residual_t), 0.0)
+    np.testing.assert_allclose(np.asarray(residual_p), 0.0)
+
+
+def test_aethergrid_collects_only_requested_native_angular_sources():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    source_t = np.ones((3, 3, 3, 1)) * 0.25
+    source_p = np.ones((3, 3, 3, 1)) * 0.5
+    boundary_t = np.ones((3, 3, 3, 1)) * 0.75
+    boundary_p = np.ones((3, 3, 3, 1)) * 1.25
+
+    grid[1, 1, 1] = NativeAngularExchangeProbe(source_t, source_p, "sources")
+    grid[0, :, :] = NativeAngularExchangeProbe(
+        boundary_t,
+        boundary_p,
+        "boundaries",
+    )
+
+    collected_t, collected_p = grid.collect_native_angular_source_terms(
+        include_boundaries=False,
+    )
+
+    np.testing.assert_allclose(np.asarray(collected_t), 0.25)
+    np.testing.assert_allclose(np.asarray(collected_p), 0.5)
+
+
+def test_aethergrid_rejects_malformed_native_angular_source_terms():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    source_t = np.ones((3, 3, 3, 1))
+    source_p = np.ones((3, 3, 3))
+    grid[1, 1, 1] = NativeAngularExchangeProbe(source_t, source_p, "sources")
+
+    try:
+        grid.collect_native_angular_source_terms()
+    except ValueError as exc:
+        assert "native angular poloidal source" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for malformed source shape")
+
+
 def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
     grid = fdtd.AetherGrid(shape=(5, 5, 5))
     grid[2, 2, 2] = fdtd.AetherPointSource(amplitude=1.0, phase_shift=pi / 2)
@@ -355,6 +466,8 @@ def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
     assert not np.any(np.asarray(grid.native_angular_tau_metric_divergence_p))
     assert not np.any(np.asarray(grid.native_angular_transport_residual_t))
     assert not np.any(np.asarray(grid.native_angular_transport_residual_p))
+    assert not np.any(np.asarray(grid.native_angular_source_t))
+    assert not np.any(np.asarray(grid.native_angular_source_p))
 
 
 def test_aethergrid_reset_preserves_native_angular_geometry():
@@ -371,6 +484,8 @@ def test_aethergrid_reset_preserves_native_angular_geometry():
     grid.evaluate_native_angular_torque_divergence()
     grid.evaluate_native_angular_metric_divergence()
     grid.evaluate_native_angular_transport_residual()
+    grid.native_angular_source_t[1, 1, 1, 0] = 6.0
+    grid.native_angular_source_p[1, 1, 1, 0] = 7.0
 
     grid.reset()
 
@@ -390,6 +505,8 @@ def test_aethergrid_reset_preserves_native_angular_geometry():
     assert not np.any(np.asarray(grid.native_angular_tau_metric_divergence_p))
     assert not np.any(np.asarray(grid.native_angular_transport_residual_t))
     assert not np.any(np.asarray(grid.native_angular_transport_residual_p))
+    assert not np.any(np.asarray(grid.native_angular_source_t))
+    assert not np.any(np.asarray(grid.native_angular_source_p))
 
 
 def test_aether_point_source_injects_native_velocity():

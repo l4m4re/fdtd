@@ -226,6 +226,8 @@ class AetherGrid:
         self.native_angular_transport_residual_p = bd.zeros(
             (self.Nx, self.Ny, self.Nz, 1)
         )
+        self.native_angular_source_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_source_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
 
         self._sync_public_aliases()
         
@@ -700,6 +702,72 @@ class AetherGrid:
             self.native_angular_transport_residual_p,
         )
 
+    def _validate_native_angular_source_terms(self, source_t, source_p):
+        """Validate explicit native angular source/exchange terms."""
+
+        source_t = bd.asarray(source_t)
+        source_p = bd.asarray(source_p)
+        expected_shape = self.angular_torque_t.shape
+        if source_t.shape != expected_shape:
+            raise ValueError(
+                "native angular toroidal source must have shape "
+                f"{expected_shape}, got {source_t.shape}"
+            )
+        if source_p.shape != expected_shape:
+            raise ValueError(
+                "native angular poloidal source must have shape "
+                f"{expected_shape}, got {source_p.shape}"
+            )
+        return source_t, source_p
+
+    def collect_native_angular_source_terms(
+        self,
+        include_sources=True,
+        include_boundaries=True,
+    ):
+        """Collect explicit native angular source/exchange terms.
+
+        Scene elements may opt in by exposing
+        ``native_angular_source_terms()``, returning ``(source_t, source_p)``
+        arrays with the same shape and units as ``angular_torque_t`` and
+        ``angular_torque_p``. This method only sums those explicit terms into
+        ``native_angular_source_t`` and ``native_angular_source_p``. It is not
+        called by ``step()``, does not update angular momentum, and does not
+        make boundary exchange implicit in the residual helper.
+        """
+
+        self.native_angular_source_t *= 0.0
+        self.native_angular_source_p *= 0.0
+
+        actors = []
+        if include_sources:
+            actors.extend(self.sources)
+        if include_boundaries:
+            actors.extend(self.boundaries)
+
+        for actor in actors:
+            hook = getattr(actor, "native_angular_source_terms", None)
+            if hook is None:
+                continue
+            terms = hook()
+            if terms is None:
+                continue
+            try:
+                source_t, source_p = terms
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "native_angular_source_terms() must return "
+                    "(source_t, source_p)"
+                )
+            source_t, source_p = self._validate_native_angular_source_terms(
+                source_t,
+                source_p,
+            )
+            self.native_angular_source_t += source_t
+            self.native_angular_source_p += source_p
+
+        return self.native_angular_source_t, self.native_angular_source_p
+
     def advance_linear_sector(self):
         """Advance the primary linear state with a short Taylor step."""
 
@@ -794,6 +862,8 @@ class AetherGrid:
         self.native_angular_tau_metric_divergence_p *= 0.0
         self.native_angular_transport_residual_t *= 0.0
         self.native_angular_transport_residual_p *= 0.0
+        self.native_angular_source_t *= 0.0
+        self.native_angular_source_p *= 0.0
 
         self._sync_public_aliases()
         self.time_steps_passed = 0

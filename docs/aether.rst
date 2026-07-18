@@ -77,6 +77,11 @@ The staged native fields are:
 - ``angular_torque_t`` and ``angular_torque_p`` for staged native torque
   channels.
 
+The residual path also stores ``native_angular_source_t`` and
+``native_angular_source_p`` as explicit source or boundary-exchange terms.
+These arrays are zero by default and are not inferred from ordinary Maxwell
+boundary behavior.
+
 The helper methods that populate these fields are deliberately explicit:
 
 - ``evaluate_angular_clock_benchmark()`` evaluates
@@ -115,6 +120,14 @@ through the optional source arrays. The current implementation does not infer
 boundary exchange, advance angular momentum, or feed this residual back into
 ``linear_a``.
 
+For opt-in experiments, scene elements may expose
+``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.
+``collect_native_angular_source_terms()`` sums those explicit terms into
+``native_angular_source_t`` and ``native_angular_source_p``. This collector is
+not called by ``step()`` or by the residual helper; callers must pass the
+collected arrays to ``evaluate_native_angular_transport_residual()`` when that
+is the intended test.
+
 Caveat
 ------
 
@@ -125,11 +138,12 @@ therefore be understood as an integration bridge: useful for scene
 construction, comparison against Maxwell examples, and backend reuse, but not
 yet the finished geometric simulator.
 
-The next unresolved design step is boundary semantics for the native angular
-sector. A future update rule must state where angular boundary data live, which
-of clocks, momentum, torque, projected torque, or residuals a boundary may
-modify, how exchange enters the explicit source terms, and what bounded-growth
-test accepts the result.
+The next unresolved design step is still physical boundary semantics for the
+native angular sector. The collector only defines how explicit exchange terms
+can enter the diagnostic residual. A future update rule must state where
+angular boundary data live, which of clocks, momentum, torque, projected
+torque, or residuals a boundary may modify, how exchange enters the explicit
+source terms, and what bounded-growth test accepts the result.
 
 Quick-start adaptation
 ----------------------
