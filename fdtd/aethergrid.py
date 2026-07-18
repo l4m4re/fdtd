@@ -228,6 +228,14 @@ class AetherGrid:
         )
         self.native_angular_source_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.native_angular_source_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_momentum_rhs_t = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_momentum_rhs_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_momentum_candidate_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_momentum_candidate_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
 
         self._sync_public_aliases()
         
@@ -681,22 +689,13 @@ class AetherGrid:
             arrays until native angular boundary semantics are derived.
         """
 
-        metric_t, metric_p = self.evaluate_native_angular_metric_divergence()
-        if source_t is None:
-            source_t = bd.zeros_like(self.angular_torque_t)
-        else:
-            source_t = bd.asarray(source_t)
-        if source_p is None:
-            source_p = bd.zeros_like(self.angular_torque_p)
-        else:
-            source_p = bd.asarray(source_p)
+        rhs_t, rhs_p = self.evaluate_native_angular_momentum_rhs(
+            source_t=source_t,
+            source_p=source_p,
+        )
 
-        self.native_angular_transport_residual_t = (
-            self.angular_torque_t + metric_t - source_t
-        )
-        self.native_angular_transport_residual_p = (
-            self.angular_torque_p + metric_p - source_p
-        )
+        self.native_angular_transport_residual_t = self.angular_torque_t - rhs_t
+        self.native_angular_transport_residual_p = self.angular_torque_p - rhs_p
         return (
             self.native_angular_transport_residual_t,
             self.native_angular_transport_residual_p,
@@ -767,6 +766,73 @@ class AetherGrid:
             self.native_angular_source_p += source_p
 
         return self.native_angular_source_t, self.native_angular_source_p
+
+    def evaluate_native_angular_momentum_rhs(
+        self,
+        source_t=None,
+        source_p=None,
+    ):
+        """Evaluate the passive native angular momentum transport RHS.
+
+        The staged transport equation is
+        ``dL/dt = S_L - ell*div(tau_native)``. This method stores that right
+        hand side in ``native_angular_momentum_rhs_t`` and
+        ``native_angular_momentum_rhs_p``. It does not advance
+        ``angular_momentum_t`` or ``angular_momentum_p``.
+        """
+
+        metric_t, metric_p = self.evaluate_native_angular_metric_divergence()
+        if source_t is None:
+            source_t = bd.zeros_like(self.angular_torque_t)
+        else:
+            source_t = bd.asarray(source_t)
+        if source_p is None:
+            source_p = bd.zeros_like(self.angular_torque_p)
+        else:
+            source_p = bd.asarray(source_p)
+        source_t, source_p = self._validate_native_angular_source_terms(
+            source_t,
+            source_p,
+        )
+
+        self.native_angular_momentum_rhs_t = source_t - metric_t
+        self.native_angular_momentum_rhs_p = source_p - metric_p
+        return (
+            self.native_angular_momentum_rhs_t,
+            self.native_angular_momentum_rhs_p,
+        )
+
+    def predict_native_angular_momentum_step(
+        self,
+        delta=None,
+        source_t=None,
+        source_p=None,
+    ):
+        """Predict one passive native angular momentum transport step.
+
+        Returns candidate next momentum fields computed as
+        ``L_next = L + delta*(S_L - ell*div(tau_native))``. The candidate is
+        stored separately and is not promoted into ``angular_momentum_t`` or
+        ``angular_momentum_p``.
+        """
+
+        if delta is None:
+            delta = self.time_step
+
+        rhs_t, rhs_p = self.evaluate_native_angular_momentum_rhs(
+            source_t=source_t,
+            source_p=source_p,
+        )
+        self.native_angular_momentum_candidate_t = (
+            self.angular_momentum_t + delta * rhs_t
+        )
+        self.native_angular_momentum_candidate_p = (
+            self.angular_momentum_p + delta * rhs_p
+        )
+        return (
+            self.native_angular_momentum_candidate_t,
+            self.native_angular_momentum_candidate_p,
+        )
 
     def advance_linear_sector(self):
         """Advance the primary linear state with a short Taylor step."""
@@ -864,6 +930,10 @@ class AetherGrid:
         self.native_angular_transport_residual_p *= 0.0
         self.native_angular_source_t *= 0.0
         self.native_angular_source_p *= 0.0
+        self.native_angular_momentum_rhs_t *= 0.0
+        self.native_angular_momentum_rhs_p *= 0.0
+        self.native_angular_momentum_candidate_t *= 0.0
+        self.native_angular_momentum_candidate_p *= 0.0
 
         self._sync_public_aliases()
         self.time_steps_passed = 0

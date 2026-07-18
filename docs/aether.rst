@@ -82,6 +82,12 @@ The residual path also stores ``native_angular_source_t`` and
 These arrays are zero by default and are not inferred from ordinary Maxwell
 boundary behavior.
 
+For passive transport experiments, ``native_angular_momentum_rhs_t`` and
+``native_angular_momentum_rhs_p`` store the candidate right-hand side
+``S_L - ell*div(tau_native)``. ``native_angular_momentum_candidate_t`` and
+``native_angular_momentum_candidate_p`` store one predicted next momentum state
+without promoting it into ``angular_momentum_t`` or ``angular_momentum_p``.
+
 The helper methods that populate these fields are deliberately explicit:
 
 - ``evaluate_angular_clock_benchmark()`` evaluates
@@ -93,7 +99,11 @@ The helper methods that populate these fields are deliberately explicit:
 - ``update_native_angular_torque()`` evaluates a finite-difference
   ``tau = dL/dt`` from a previous momentum state; and
 - ``project_native_angular_torque()`` maps the two native torque channels into
-  ``native_angular_tau`` through the local frame vectors.
+  ``native_angular_tau`` through the local frame vectors;
+- ``evaluate_native_angular_momentum_rhs()`` evaluates the passive transport
+  right-hand side for ``dL/dt``; and
+- ``predict_native_angular_momentum_step()`` computes a candidate next native
+  angular momentum state without applying it.
 
 None of these helpers are called by ``step()``. They are diagnostics and
 staging points for the next architecture pass, not a completed angular update
@@ -112,13 +122,19 @@ The native torque projection can also be inspected spatially:
 - ``evaluate_native_angular_transport_residual()`` evaluates the passive
   candidate
 
-  ``R_L = dL/dt + ell*div(tau_native) - S_L``.
+``R_L = dL/dt + ell*div(tau_native) - S_L``.
 
 The residual helper treats ``angular_torque_t`` and ``angular_torque_p`` as the
 ``dL/dt`` terms. Any external or boundary exchange must be supplied explicitly
 through the optional source arrays. The current implementation does not infer
 boundary exchange, advance angular momentum, or feed this residual back into
 ``linear_a``.
+
+Equivalently, the passive transport RHS is
+``dL/dt = S_L - ell*div(tau_native)``, and the residual is the difference
+between the staged torque and that RHS. This is useful for bounded diagnostic
+tests because a caller can compare a staged torque law with the candidate
+transport law before any update rule is promoted.
 
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.
