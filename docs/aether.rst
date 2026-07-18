@@ -144,6 +144,12 @@ finite and equal to the initial native angular momentum. This benchmark does
 not promote the predictor into ``step()`` and does not define physical boundary
 exchange.
 
+The first unbalanced accounting benchmark is
+``test_aethergrid_passive_momentum_predictor_damping_64_step_benchmark``. It
+adds explicit local damping sources and requires the passive candidate momentum
+to follow the exact discrete decay. This is still only source accounting; it is
+not a sponge layer, absorbing boundary, or physical boundary law.
+
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.
 ``collect_native_angular_source_terms()`` sums those explicit terms into
