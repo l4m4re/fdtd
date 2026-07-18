@@ -332,7 +332,18 @@ candidate. It uses that comparator quantity as its source input: t and p are
 projected onto the boundary normal, sign-split separately, and only incident
 native-channel flux is converted into dissipative source exchange. Its current
 role is to compare against ``AetherAngularMatchedFluxBoundary`` in blind-spot
-cases, not to claim a finished absorber.
+cases, not to claim a finished absorber. The boundary-flux example now includes
+a propagated oblique counterpropagating scene for that comparison. In that
+benchmark, the launch state has zero summed projected incident/outgoing flux
+but nonzero direct native-channel incident/outgoing flux. The summed
+matched-flux candidate therefore has no launch exchange, while the
+direct-channel candidate damps the hidden incident channel. Across the staged
+transport run both candidates remain finite, dissipative in the
+``S_L*L/I`` diagnostic, and below the closed-boundary quadratic-energy and
+boundary-band-momentum baselines; the direct-channel candidate finishes below
+the summed candidate in that hidden-flux benchmark. This makes direct-channel
+matching the preferred comparator for counterpropagating t/p flux, but still
+not a derived native absorber or reflection law.
 ``test_aethergrid_transport_advance_reflective_boundary_conserves_quadratic_energy``
 checks the same sign-flip energy bookkeeping through the promoted opt-in
 transport helper.
@@ -552,9 +563,10 @@ boundary-observability benchmark for Phase 2. It runs the same staged
 native-angular transport setup with registered x-face
 ``AetherAngularNoExchangeBoundary`` hooks, x-face
 ``AetherAngularSpongeBoundary`` hooks, x-face
-``AetherAngularMatchedFluxBoundary`` hooks, a swapped-frame x-face matched-flux
-variant, and an xy-face no-exchange / matched-flux pair to expose both default
-angular frame channels in one benchmark. All propagated runs use
+``AetherAngularMatchedFluxBoundary`` hooks, x-face
+``AetherAngularDirectMatchedFluxBoundary`` hooks, a swapped-frame x-face
+matched-flux variant, and an xy-face no-exchange / matched-flux pair to expose
+both default angular frame channels in one benchmark. All propagated runs use
 contract-driven
 ``collect_native_angular_boundary_channel_fluxes()`` diagnostics.
 
@@ -565,17 +577,17 @@ Run it from the package root with for example::
 The expected acceptance is finite native momentum in all runs, two registered
 boundary contracts per propagated run, ``physical_boundary_laws: False`` for
 no-exchange and sponge, ``physical_boundary_laws: True`` for the matched-flux
-candidate, visible incident/outgoing and matched-flux t/p channel diagnostics,
-nonpositive sponge and matched-flux exchange power, and no greater final sponge
-or matched-flux energy than the no-exchange baseline. Boundary-band momentum
-is reported as a diagnostic, but it is not an invariant for the swapped-frame
-scene. This is the current propagated-boundary acceptance instrumentation and
-static candidate-comparison harness; neither candidate is yet a derived native
-t/p angular absorber or reflector. With the current default frame, the x-face
-matched-flux branch reports zero p-channel incident flux. The swapped-frame
-x-face branch and the xy-face branch must both make p-channel incident flux
-positive.
-The same output also reports a static counterpropagating oblique-frame case:
+and direct-channel matched-flux candidates, visible incident/outgoing and
+matched-flux t/p channel diagnostics, nonpositive sponge and candidate
+exchange power, and no greater final sponge or candidate energy than the
+no-exchange baseline. Boundary-band momentum is reported as a diagnostic, but
+it is not an invariant for the swapped-frame scene. This is the current
+propagated-boundary acceptance instrumentation and candidate-comparison
+harness; neither candidate is yet a derived native t/p angular absorber or
+reflector. With the current default frame, the x-face matched-flux branch
+reports zero p-channel incident flux. The swapped-frame x-face branch and the
+xy-face branch must both make p-channel incident flux positive.
+The same output reports a static counterpropagating oblique-frame case:
 ``counterpropagating_weighted_incident_total`` and
 ``counterpropagating_weighted_outgoing_total`` must remain zero, while
 ``counterpropagating_direct_incident_total`` and
@@ -585,3 +597,11 @@ case, while the direct-channel candidate must report
 ``counterpropagating_direct_matched_absorbs_hidden_flux: True`` with negative
 exchange power. This compares two candidate laws on the same hidden-flux
 configuration; it still does not validate either as a finished absorber.
+Finally, the ``counterpropagating_propagated_*`` output runs the same hidden
+t/p launch state through the opt-in transport lifecycle. It requires hidden
+summed projected flux at launch, visible direct native-channel flux, no launch
+exchange for the summed matched-flux candidate, dissipative launch exchange for
+the direct-channel candidate, finite propagation, nonpositive exchange power,
+and no greater final energy or boundary-band momentum than the no-exchange
+baseline. The direct-channel candidate must also finish below the summed
+candidate in energy and boundary-band momentum for this benchmark.

@@ -3993,14 +3993,17 @@ def test_aether_native_angular_boundary_flux_example_runs():
     assert "no_exchange_finite: True" in result.stdout
     assert "sponge_finite: True" in result.stdout
     assert "matched_flux_finite: True" in result.stdout
+    assert "direct_matched_flux_finite: True" in result.stdout
     assert "matched_flux_swapped_frame_finite: True" in result.stdout
     assert "no_exchange_boundary_contracts: 2" in result.stdout
     assert "sponge_boundary_contracts: 2" in result.stdout
     assert "matched_flux_boundary_contracts: 2" in result.stdout
+    assert "direct_matched_flux_boundary_contracts: 2" in result.stdout
     assert "matched_flux_swapped_frame_boundary_contracts: 2" in result.stdout
     assert "no_exchange_physical_boundary_laws: False" in result.stdout
     assert "sponge_physical_boundary_laws: False" in result.stdout
     assert "matched_flux_physical_boundary_laws: True" in result.stdout
+    assert "direct_matched_flux_physical_boundary_laws: True" in result.stdout
     assert "matched_flux_swapped_frame_physical_boundary_laws: True" in result.stdout
     assert "matched_flux_max_incident_flux_t:" in result.stdout
     assert "matched_flux_max_incident_flux_p:" in result.stdout
@@ -4016,20 +4019,52 @@ def test_aether_native_angular_boundary_flux_example_runs():
     assert "matched_flux_xy_max_outgoing_flux_p:" in result.stdout
     assert "sponge_energy_no_greater: True" in result.stdout
     assert "matched_flux_energy_no_greater: True" in result.stdout
+    assert "direct_matched_flux_energy_no_greater: True" in result.stdout
     assert "matched_flux_swapped_frame_energy_no_greater: True" in result.stdout
     assert "matched_flux_xy_energy_no_greater: True" in result.stdout
     assert "sponge_boundary_momentum_no_greater: True" in result.stdout
     assert "matched_flux_boundary_momentum_no_greater: True" in result.stdout
+    assert "direct_matched_flux_boundary_momentum_no_greater: True" in result.stdout
     assert "matched_flux_swapped_frame_boundary_momentum_no_greater:" in result.stdout
     assert "matched_flux_xy_boundary_momentum_no_greater: True" in result.stdout
     assert "sponge_exchange_nonpositive: True" in result.stdout
     assert "matched_flux_exchange_nonpositive: True" in result.stdout
+    assert "direct_matched_flux_exchange_nonpositive: True" in result.stdout
     assert "matched_flux_swapped_frame_exchange_nonpositive: True" in result.stdout
     assert "matched_flux_xy_exchange_nonpositive: True" in result.stdout
     assert "counterpropagating_direct_exposes_hidden_flux: True" in result.stdout
     assert "counterpropagating_matched_no_exchange: True" in result.stdout
     assert (
         "counterpropagating_direct_matched_absorbs_hidden_flux: True"
+        in result.stdout
+    )
+    assert (
+        "counterpropagating_propagated_hidden_flux_at_launch: True"
+        in result.stdout
+    )
+    assert (
+        "counterpropagating_propagated_matched_no_launch_exchange: True"
+        in result.stdout
+    )
+    assert (
+        "counterpropagating_propagated_direct_absorbs_launch_hidden_flux: True"
+        in result.stdout
+    )
+    assert (
+        "counterpropagating_propagated_direct_energy_below_matched: True"
+        in result.stdout
+    )
+    assert (
+        "counterpropagating_propagated_direct_boundary_momentum_below_matched: True"
+        in result.stdout
+    )
+    assert (
+        "counterpropagating_propagated_direct_no_artificial_momentum_injection: True"
+        in result.stdout
+    )
+    assert (
+        "counterpropagating_propagated_decision: "
+        "direct_channel_candidate_preferred_for_hidden_flux_benchmark"
         in result.stdout
     )
     summary = {
@@ -4057,6 +4092,36 @@ def test_aether_native_angular_boundary_flux_example_runs():
     assert float(summary["counterpropagating_matched_exchange_power"]) == 0.0
     assert float(summary["counterpropagating_direct_matched_source_abs_sum"]) > 0.0
     assert float(summary["counterpropagating_direct_matched_exchange_power"]) < 0.0
+    assert (
+        float(summary["counterpropagating_propagated_launch_weighted_incident_total"])
+        == 0.0
+    )
+    assert (
+        float(summary["counterpropagating_propagated_launch_weighted_outgoing_total"])
+        == 0.0
+    )
+    assert (
+        float(summary["counterpropagating_propagated_launch_direct_incident_total"])
+        > 0.0
+    )
+    assert (
+        float(summary["counterpropagating_propagated_launch_direct_outgoing_total"])
+        > 0.0
+    )
+    assert (
+        float(summary["counterpropagating_propagated_launch_direct_incident_p"])
+        > 0.0
+    )
+    assert (
+        float(summary["counterpropagating_propagated_launch_direct_outgoing_t"])
+        > 0.0
+    )
+    assert float(summary["counterpropagating_propagated_direct_final_energy"]) < float(
+        summary["counterpropagating_propagated_matched_final_energy"]
+    )
+    assert float(
+        summary["counterpropagating_propagated_direct_boundary_momentum"]
+    ) < float(summary["counterpropagating_propagated_matched_boundary_momentum"])
 
 
 def test_aethergrid_supports_classic_source_and_detector_hooks():
