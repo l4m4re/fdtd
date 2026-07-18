@@ -280,6 +280,59 @@ def test_aethergrid_evaluates_native_angular_transport_residual():
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aethergrid_transport_residual_zeroes_when_source_matches_balance():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 3.0
+    grid.angular_torque_t[:, :, :, 0] = 0.25
+    grid.angular_torque_p[:, :, :, 0] = 0.5
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+
+    metric_t, metric_p = grid.evaluate_native_angular_metric_divergence()
+    source_t = np.asarray(grid.angular_torque_t) + np.asarray(metric_t)
+    source_p = np.asarray(grid.angular_torque_p) + np.asarray(metric_p)
+
+    residual_t, residual_p = grid.evaluate_native_angular_transport_residual(
+        source_t=source_t,
+        source_p=source_p,
+    )
+
+    np.testing.assert_allclose(np.asarray(residual_t), 0.0)
+    np.testing.assert_allclose(np.asarray(residual_p), 0.0)
+
+
+def test_aethergrid_transport_residual_is_bounded_and_passive_when_repeated():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    grid.ell_t[:, :, :, 0] = 1.5
+    grid.ell_p[:, :, :, 0] = 2.5
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    grid.angular_torque_t[:, :, :, 0] = 0.25
+    grid.angular_torque_p[:, :, :, 0] = 0.5
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+    initial_momentum_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_momentum_p = np.asarray(grid.angular_momentum_p).copy()
+
+    residual_t, residual_p = grid.evaluate_native_angular_transport_residual()
+    first_t = np.asarray(residual_t).copy()
+    first_p = np.asarray(residual_p).copy()
+
+    for _ in range(20):
+        residual_t, residual_p = grid.evaluate_native_angular_transport_residual()
+        np.testing.assert_allclose(np.asarray(residual_t), first_t)
+        np.testing.assert_allclose(np.asarray(residual_p), first_p)
+        assert np.all(np.isfinite(np.asarray(residual_t)))
+        assert np.all(np.isfinite(np.asarray(residual_p)))
+
+    assert grid.time_steps_passed == 0
+    np.testing.assert_allclose(np.asarray(grid.angular_momentum_t), initial_momentum_t)
+    np.testing.assert_allclose(np.asarray(grid.angular_momentum_p), initial_momentum_p)
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
 def test_aethergrid_step_does_not_promote_cartesian_omega_to_native_clocks():
     grid = fdtd.AetherGrid(shape=(5, 5, 5))
     grid[2, 2, 2] = fdtd.AetherPointSource(amplitude=1.0, phase_shift=pi / 2)

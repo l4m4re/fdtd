@@ -659,10 +659,10 @@ class AetherGrid:
         """Evaluate a passive native angular transport residual candidate.
 
         Args:
-            source_t: Optional toroidal source term for the residual. Defaults
-                to zero.
-            source_p: Optional poloidal source term for the residual. Defaults
-                to zero.
+            source_t: Optional explicit toroidal source term with the same
+                units and shape as ``angular_torque_t``. Defaults to zero.
+            source_p: Optional explicit poloidal source term with the same
+                units and shape as ``angular_torque_p``. Defaults to zero.
 
         Returns:
             ``(native_angular_transport_residual_t,
@@ -673,8 +673,10 @@ class AetherGrid:
             ``R_L = dL/dt + ell*div(tau_native) - S_L``. The ``dL/dt`` part is
             represented by the staged ``angular_torque_t`` and
             ``angular_torque_p`` fields. This is only a diagnostic residual; it
-            does not advance angular momentum, define boundary exchange, or
-            feed back into the linear branch.
+            does not advance angular momentum, call boundary hooks, define
+            boundary exchange, or feed back into the linear branch. Boundary or
+            external exchange must be supplied explicitly through the source
+            arrays until native angular boundary semantics are derived.
         """
 
         metric_t, metric_p = self.evaluate_native_angular_metric_divergence()

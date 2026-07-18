@@ -54,6 +54,67 @@ back into the dynamics, but the placeholder is there so the dimensional
 separation between linear transport and angular geometry remains visible in the
 code.
 
+Native angular staging
+----------------------
+
+The current bridge exposes a second, passive angular staging layer alongside
+the Cartesian ``angular_omega`` field. This layer is meant to make the intended
+native angular geometry testable without silently changing the timestep update.
+
+The staged native fields are:
+
+- ``omega_t`` and ``omega_p`` for two angular clock channels;
+- ``angular_gamma`` for a hyperbolic or envelope benchmark channel;
+- ``theta_t``, ``theta_p``, and ``angular_chi`` for the corresponding
+  dimensionless timestep increments;
+- ``angular_clock_lambda`` for the local angular-clock eigenvalue benchmark;
+- ``angular_e_t`` and ``angular_e_p`` for the current local angular frame;
+- ``ell_t`` and ``ell_p`` for lever-arm or metric lengths;
+- ``angular_inertia_t`` and ``angular_inertia_p`` for provisional native
+  moment-density channels;
+- ``angular_momentum_t`` and ``angular_momentum_p`` for native angular
+  momentum channels; and
+- ``angular_torque_t`` and ``angular_torque_p`` for staged native torque
+  channels.
+
+The helper methods that populate these fields are deliberately explicit:
+
+- ``evaluate_angular_clock_benchmark()`` evaluates
+  ``omega_t``, ``omega_p``, and ``angular_gamma`` without changing the bridge
+  dynamics;
+- ``update_native_angular_inertia()`` applies the provisional closure
+  ``I = rho * ell**2``;
+- ``update_native_angular_momentum()`` applies ``L = I * omega``;
+- ``update_native_angular_torque()`` evaluates a finite-difference
+  ``tau = dL/dt`` from a previous momentum state; and
+- ``project_native_angular_torque()`` maps the two native torque channels into
+  ``native_angular_tau`` through the local frame vectors.
+
+None of these helpers are called by ``step()``. They are diagnostics and
+staging points for the next architecture pass, not a completed angular update
+law.
+
+Residual diagnostics
+--------------------
+
+The native torque projection can also be inspected spatially:
+
+- ``evaluate_native_angular_torque_divergence()`` computes
+  ``div(native_angular_tau)``;
+- ``evaluate_native_angular_metric_divergence()`` multiplies that divergence
+  by ``ell_t`` and ``ell_p`` so it can be compared with the staged torque
+  channels; and
+- ``evaluate_native_angular_transport_residual()`` evaluates the passive
+  candidate
+
+  ``R_L = dL/dt + ell*div(tau_native) - S_L``.
+
+The residual helper treats ``angular_torque_t`` and ``angular_torque_p`` as the
+``dL/dt`` terms. Any external or boundary exchange must be supplied explicitly
+through the optional source arrays. The current implementation does not infer
+boundary exchange, advance angular momentum, or feed this residual back into
+``linear_a``.
+
 Caveat
 ------
 
@@ -63,6 +124,12 @@ branches may need distinct but coupled discrete sectors. ``AetherGrid`` should
 therefore be understood as an integration bridge: useful for scene
 construction, comparison against Maxwell examples, and backend reuse, but not
 yet the finished geometric simulator.
+
+The next unresolved design step is boundary semantics for the native angular
+sector. A future update rule must state where angular boundary data live, which
+of clocks, momentum, torque, projected torque, or residuals a boundary may
+modify, how exchange enters the explicit source terms, and what bounded-growth
+test accepts the result.
 
 Quick-start adaptation
 ----------------------
