@@ -136,6 +136,14 @@ between the staged torque and that RHS. This is useful for bounded diagnostic
 tests because a caller can compare a staged torque law with the candidate
 transport law before any update rule is promoted.
 
+The first bounded predictor benchmark is the balanced-source no-drift case in
+``test_aethergrid_passive_momentum_predictor_balanced_64_step_benchmark``. It
+uses 64 candidate-only iterations with explicit sources matching the
+metric-weighted torque divergence. The candidate momentum fields must stay
+finite and equal to the initial native angular momentum. This benchmark does
+not promote the predictor into ``step()`` and does not define physical boundary
+exchange.
+
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.
 ``collect_native_angular_source_terms()`` sums those explicit terms into

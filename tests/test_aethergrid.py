@@ -400,6 +400,45 @@ def test_aethergrid_predicts_passive_native_angular_momentum_step():
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aethergrid_passive_momentum_predictor_balanced_64_step_benchmark():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    delta = 0.05
+    steps = 64
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 3.0
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+    metric_t, metric_p = grid.evaluate_native_angular_metric_divergence()
+    source_t = np.asarray(metric_t).copy()
+    source_p = np.asarray(metric_p).copy()
+    initial_momentum_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_momentum_p = np.asarray(grid.angular_momentum_p).copy()
+
+    for _ in range(steps):
+        candidate_t, candidate_p = grid.predict_native_angular_momentum_step(
+            delta=delta,
+            source_t=source_t,
+            source_p=source_p,
+        )
+        np.testing.assert_allclose(np.asarray(candidate_t), initial_momentum_t)
+        np.testing.assert_allclose(np.asarray(candidate_p), initial_momentum_p)
+        assert np.all(np.isfinite(np.asarray(candidate_t)))
+        assert np.all(np.isfinite(np.asarray(candidate_p)))
+
+        # This assignment simulates a candidate-only update loop inside the
+        # benchmark. The production stepper still does not call this predictor.
+        grid.angular_momentum_t = candidate_t
+        grid.angular_momentum_p = candidate_p
+
+    assert grid.time_steps_passed == 0
+    np.testing.assert_allclose(np.asarray(grid.angular_momentum_t), initial_momentum_t)
+    np.testing.assert_allclose(np.asarray(grid.angular_momentum_p), initial_momentum_p)
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
 def test_aethergrid_transport_residual_matches_staged_torque_minus_rhs():
     grid = fdtd.AetherGrid(shape=(4, 4, 4))
     grid.ell_t[:, :, :, 0] = 2.0
