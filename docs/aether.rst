@@ -169,6 +169,10 @@ explicit in the source-term contract.
 uses the adjacent interior cell as the target state and contributes
 ``rate*(sign*L_mirror - L_boundary)`` on the registered boundary slice. This is
 still diagnostic source accounting, not a production wave-reflection boundary.
+``AetherGrid.evaluate_native_angular_kinetic_energy()`` adds the matching
+quadratic bookkeeping diagnostic ``0.5*L**2/I`` for the native angular
+momentum channels. It is used to check candidate-only source accounting, not to
+define a Hamiltonian, detector observable, or production energy update.
 
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.

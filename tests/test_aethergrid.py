@@ -179,6 +179,35 @@ def test_aethergrid_updates_native_angular_momentum_from_inertia_and_clocks():
     assert float(grid.angular_momentum_p[1, 1, 1, 0]) == 20.0
 
 
+def test_aethergrid_evaluates_native_angular_kinetic_energy_diagnostic():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+    grid.angular_inertia_t[:, :, :, 0] = 2.0
+    grid.angular_inertia_p[:, :, :, 0] = 4.0
+    grid.angular_momentum_t[:, :, :, 0] = 6.0
+    grid.angular_momentum_p[:, :, :, 0] = 8.0
+
+    energy_t, energy_p, total_energy = (
+        grid.evaluate_native_angular_kinetic_energy()
+    )
+
+    np.testing.assert_allclose(np.asarray(energy_t), 9.0)
+    np.testing.assert_allclose(np.asarray(energy_p), 8.0)
+    assert float(total_energy) == 8 * (9.0 + 8.0)
+
+
+def test_aethergrid_native_angular_kinetic_energy_requires_positive_inertia():
+    grid = fdtd.AetherGrid(shape=(2, 2, 2))
+    grid.angular_inertia_t[:, :, :, 0] = 1.0
+    grid.angular_inertia_p[:, :, :, 0] = 0.0
+
+    try:
+        grid.evaluate_native_angular_kinetic_energy()
+    except ValueError as exc:
+        assert "inertia must be positive" in str(exc)
+    else:
+        raise AssertionError("expected positive-inertia validation")
+
+
 def test_aethergrid_updates_native_angular_torque_from_momentum_change():
     grid = fdtd.AetherGrid(shape=(3, 3, 3))
     previous_t = np.zeros((3, 3, 3, 1))
@@ -690,6 +719,48 @@ def test_aethergrid_passive_momentum_predictor_reflective_boundary_hook_64_step(
 
         # Candidate-only reflection accounting benchmark; production dynamics
         # still do not call or apply the predictor.
+        grid.angular_momentum_t = grid.native_angular_momentum_candidate_t
+        grid.angular_momentum_p = grid.native_angular_momentum_candidate_p
+
+    assert grid.time_steps_passed == 0
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aethergrid_reflective_boundary_conserves_quadratic_energy_for_sign_flip():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    delta = 0.05
+    steps = 64
+    grid.angular_inertia_t[:, :, :, 0] = 1.0
+    grid.angular_inertia_p[:, :, :, 0] = 1.0
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    _, _, initial_energy = grid.evaluate_native_angular_kinetic_energy()
+    grid[0, :, :] = fdtd.AetherAngularReflectiveBoundary(
+        response_rate_t=1.0 / delta,
+        response_rate_p=1.0 / delta,
+        sign_t=-1.0,
+        sign_p=-1.0,
+    )
+
+    for _ in range(steps):
+        source_t, source_p = grid.collect_native_angular_source_terms()
+        candidate_t, candidate_p = grid.predict_native_angular_momentum_step(
+            delta=delta,
+            source_t=source_t,
+            source_p=source_p,
+        )
+        _, _, candidate_energy = grid.evaluate_native_angular_kinetic_energy(
+            momentum_t=candidate_t,
+            momentum_p=candidate_p,
+        )
+
+        np.testing.assert_allclose(float(candidate_energy), float(initial_energy))
+        assert np.all(np.isfinite(np.asarray(candidate_t)))
+        assert np.all(np.isfinite(np.asarray(candidate_p)))
+
+        # Candidate-only sign-reflection accounting benchmark; production
+        # dynamics still do not call or apply the predictor.
         grid.angular_momentum_t = grid.native_angular_momentum_candidate_t
         grid.angular_momentum_p = grid.native_angular_momentum_candidate_p
 

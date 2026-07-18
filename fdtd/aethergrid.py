@@ -546,6 +546,52 @@ class AetherGrid:
         self.angular_momentum_p = self.angular_inertia_p * self.omega_p
         return self.angular_momentum_t, self.angular_momentum_p
 
+    def evaluate_native_angular_kinetic_energy(
+        self,
+        momentum_t=None,
+        momentum_p=None,
+        inertia_t=None,
+        inertia_p=None,
+    ):
+        """Evaluate passive native angular kinetic-energy diagnostics.
+
+        Args:
+            momentum_t: Optional toroidal momentum field. Defaults to
+                ``angular_momentum_t``.
+            momentum_p: Optional poloidal momentum field. Defaults to
+                ``angular_momentum_p``.
+            inertia_t: Optional toroidal inertia field. Defaults to
+                ``angular_inertia_t``.
+            inertia_p: Optional poloidal inertia field. Defaults to
+                ``angular_inertia_p``.
+
+        Returns:
+            ``(energy_t, energy_p, total_energy)`` using
+            ``E_L = 0.5*L**2/I`` per native angular channel.
+
+        Notes:
+            This is diagnostic bookkeeping for candidate tests. It is not a
+            Hamiltonian, not a detector-facing observable, and not coupled into
+            ``step()``.
+        """
+
+        momentum_t = (
+            self.angular_momentum_t if momentum_t is None else bd.asarray(momentum_t)
+        )
+        momentum_p = (
+            self.angular_momentum_p if momentum_p is None else bd.asarray(momentum_p)
+        )
+        inertia_t = self.angular_inertia_t if inertia_t is None else bd.asarray(inertia_t)
+        inertia_p = self.angular_inertia_p if inertia_p is None else bd.asarray(inertia_p)
+
+        if bd.max(inertia_t <= 0) or bd.max(inertia_p <= 0):
+            raise ValueError("native angular inertia must be positive")
+
+        energy_t = 0.5 * momentum_t * momentum_t / inertia_t
+        energy_p = 0.5 * momentum_p * momentum_p / inertia_p
+        total_energy = bd.sum(energy_t + energy_p)
+        return energy_t, energy_p, total_energy
+
     def update_native_angular_torque(
         self,
         previous_momentum_t=None,
