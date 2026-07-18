@@ -214,6 +214,18 @@ class AetherGrid:
         self.angular_torque_p = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
         self.native_angular_tau = bd.zeros((self.Nx, self.Ny, self.Nz, 3))
         self.native_angular_tau_divergence = bd.zeros((self.Nx, self.Ny, self.Nz, 1))
+        self.native_angular_tau_metric_divergence_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_tau_metric_divergence_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_transport_residual_t = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
+        self.native_angular_transport_residual_p = bd.zeros(
+            (self.Nx, self.Ny, self.Nz, 1)
+        )
 
         self._sync_public_aliases()
         
@@ -610,6 +622,82 @@ class AetherGrid:
         self.native_angular_tau_divergence = div(self.native_angular_tau)
         return self.native_angular_tau_divergence
 
+    def evaluate_native_angular_metric_divergence(self):
+        """Evaluate metric-weighted torque-divergence candidates.
+
+        Returns:
+            ``(native_angular_tau_metric_divergence_t,
+            native_angular_tau_metric_divergence_p)``.
+
+        Notes:
+            ``div(native_angular_tau)`` has one extra inverse-length factor
+            compared with the staged torque channels. Multiplying by the local
+            lever arms ``ell_t`` and ``ell_p`` produces passive candidates that
+            can be compared with ``angular_torque_t`` and
+            ``angular_torque_p`` in a later residual test. This still does not
+            define a transport law, source term, angular update, or feedback
+            into the linear branch.
+        """
+
+        self.evaluate_native_angular_torque_divergence()
+        self.native_angular_tau_metric_divergence_t = (
+            self.ell_t * self.native_angular_tau_divergence
+        )
+        self.native_angular_tau_metric_divergence_p = (
+            self.ell_p * self.native_angular_tau_divergence
+        )
+        return (
+            self.native_angular_tau_metric_divergence_t,
+            self.native_angular_tau_metric_divergence_p,
+        )
+
+    def evaluate_native_angular_transport_residual(
+        self,
+        source_t=None,
+        source_p=None,
+    ):
+        """Evaluate a passive native angular transport residual candidate.
+
+        Args:
+            source_t: Optional toroidal source term for the residual. Defaults
+                to zero.
+            source_p: Optional poloidal source term for the residual. Defaults
+                to zero.
+
+        Returns:
+            ``(native_angular_transport_residual_t,
+            native_angular_transport_residual_p)``.
+
+        Notes:
+            The residual candidate is
+            ``R_L = dL/dt + ell*div(tau_native) - S_L``. The ``dL/dt`` part is
+            represented by the staged ``angular_torque_t`` and
+            ``angular_torque_p`` fields. This is only a diagnostic residual; it
+            does not advance angular momentum, define boundary exchange, or
+            feed back into the linear branch.
+        """
+
+        metric_t, metric_p = self.evaluate_native_angular_metric_divergence()
+        if source_t is None:
+            source_t = bd.zeros_like(self.angular_torque_t)
+        else:
+            source_t = bd.asarray(source_t)
+        if source_p is None:
+            source_p = bd.zeros_like(self.angular_torque_p)
+        else:
+            source_p = bd.asarray(source_p)
+
+        self.native_angular_transport_residual_t = (
+            self.angular_torque_t + metric_t - source_t
+        )
+        self.native_angular_transport_residual_p = (
+            self.angular_torque_p + metric_p - source_p
+        )
+        return (
+            self.native_angular_transport_residual_t,
+            self.native_angular_transport_residual_p,
+        )
+
     def advance_linear_sector(self):
         """Advance the primary linear state with a short Taylor step."""
 
@@ -700,6 +788,10 @@ class AetherGrid:
         self.angular_torque_p *= 0.0
         self.native_angular_tau *= 0.0
         self.native_angular_tau_divergence *= 0.0
+        self.native_angular_tau_metric_divergence_t *= 0.0
+        self.native_angular_tau_metric_divergence_p *= 0.0
+        self.native_angular_transport_residual_t *= 0.0
+        self.native_angular_transport_residual_p *= 0.0
 
         self._sync_public_aliases()
         self.time_steps_passed = 0
