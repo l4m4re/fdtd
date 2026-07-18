@@ -128,7 +128,8 @@ The residual helper treats ``angular_torque_t`` and ``angular_torque_p`` as the
 ``dL/dt`` terms. Any external or boundary exchange must be supplied explicitly
 through the optional source arrays. The current implementation does not infer
 boundary exchange, advance angular momentum, or feed this residual back into
-``linear_a``.
+``linear_a``. Previously collected source buffers are not read implicitly by
+the residual or predictor helpers.
 
 Equivalently, the passive transport RHS is
 ``dL/dt = S_L - ell*div(tau_native)``, and the residual is the difference
@@ -183,9 +184,10 @@ For opt-in experiments, scene elements may expose
 ``native_angular_source_t`` and ``native_angular_source_p``. This collector is
 not called by ``step()`` or by the residual helper; callers must pass the
 collected arrays to ``evaluate_native_angular_transport_residual()`` when that
-is the intended test. The collector resets both source buffers on every call,
-so ``include_sources`` and ``include_boundaries`` select a fresh accounting
-view instead of accumulating previous collections.
+is the intended test. The same explicit-passing rule applies to
+``predict_native_angular_momentum_step()``. The collector resets both source
+buffers on every call, so ``include_sources`` and ``include_boundaries`` select
+a fresh accounting view instead of accumulating previous collections.
 The current native-angular boundary contract is intentionally narrow: boundary
 hooks may read native angular momentum and return source arrays, but they may
 not mutate clocks, momentum, torque fields, residuals, candidates, or

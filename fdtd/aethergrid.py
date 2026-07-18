@@ -731,8 +731,9 @@ class AetherGrid:
             ``angular_torque_p`` fields. This is only a diagnostic residual; it
             does not advance angular momentum, call boundary hooks, define
             boundary exchange, or feed back into the linear branch. Boundary or
-            external exchange must be supplied explicitly through the source
-            arrays until native angular boundary semantics are derived.
+            external exchange must be supplied explicitly through this method's
+            source arrays until native angular boundary semantics are derived;
+            previously collected source buffers are not read implicitly.
         """
 
         rhs_t, rhs_p = self.evaluate_native_angular_momentum_rhs(
@@ -829,7 +830,9 @@ class AetherGrid:
         ``dL/dt = S_L - ell*div(tau_native)``. This method stores that right
         hand side in ``native_angular_momentum_rhs_t`` and
         ``native_angular_momentum_rhs_p``. It does not advance
-        ``angular_momentum_t`` or ``angular_momentum_p``.
+        ``angular_momentum_t`` or ``angular_momentum_p``. Previously collected
+        source buffers are not read unless passed through ``source_t`` and
+        ``source_p``.
         """
 
         metric_t, metric_p = self.evaluate_native_angular_metric_divergence()

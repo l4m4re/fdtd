@@ -429,6 +429,60 @@ def test_aethergrid_predicts_passive_native_angular_momentum_step():
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aethergrid_residual_and_predictor_ignore_collected_sources_by_default():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    delta = 0.125
+    grid.ell_t[:, :, :, 0] = 2.0
+    grid.ell_p[:, :, :, 0] = 3.0
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    grid.angular_torque_t[:, :, :, 0] = 0.25
+    grid.angular_torque_p[:, :, :, 0] = 0.5
+    grid.native_angular_tau[1, 1, 1, 0] = 2.0
+    grid.native_angular_tau[2, 1, 1, 1] = -1.0
+    boundary_t = np.ones((4, 4, 4, 1)) * 0.75
+    boundary_p = np.ones((4, 4, 4, 1)) * 1.25
+    grid[0, :, :] = NativeAngularExchangeProbe(
+        boundary_t,
+        boundary_p,
+        "boundaries",
+    )
+    initial_momentum_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_momentum_p = np.asarray(grid.angular_momentum_p).copy()
+
+    collected_t, collected_p = grid.collect_native_angular_source_terms()
+    collected_t = np.asarray(collected_t).copy()
+    collected_p = np.asarray(collected_p).copy()
+    expected_divergence = np.asarray(div(grid.native_angular_tau))
+    metric_t = 2.0 * expected_divergence
+    metric_p = 3.0 * expected_divergence
+
+    residual_t, residual_p = grid.evaluate_native_angular_transport_residual()
+    np.testing.assert_allclose(np.asarray(residual_t), 0.25 + metric_t)
+    np.testing.assert_allclose(np.asarray(residual_p), 0.5 + metric_p)
+    np.testing.assert_allclose(np.asarray(grid.native_angular_source_t), collected_t)
+    np.testing.assert_allclose(np.asarray(grid.native_angular_source_p), collected_p)
+
+    candidate_t, candidate_p = grid.predict_native_angular_momentum_step(delta=delta)
+    np.testing.assert_allclose(
+        np.asarray(candidate_t),
+        initial_momentum_t - delta * metric_t,
+    )
+    np.testing.assert_allclose(
+        np.asarray(candidate_p),
+        initial_momentum_p - delta * metric_p,
+    )
+    np.testing.assert_allclose(np.asarray(grid.native_angular_source_t), collected_t)
+    np.testing.assert_allclose(np.asarray(grid.native_angular_source_p), collected_p)
+
+    residual_t, residual_p = grid.evaluate_native_angular_transport_residual(
+        source_t=collected_t,
+        source_p=collected_p,
+    )
+    np.testing.assert_allclose(np.asarray(residual_t), 0.25 + metric_t - collected_t)
+    np.testing.assert_allclose(np.asarray(residual_p), 0.5 + metric_p - collected_p)
+
+
 def test_aethergrid_passive_momentum_predictor_balanced_64_step_benchmark():
     grid = fdtd.AetherGrid(shape=(4, 4, 4))
     delta = 0.05
