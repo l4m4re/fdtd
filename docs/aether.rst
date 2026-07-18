@@ -183,7 +183,9 @@ For opt-in experiments, scene elements may expose
 ``native_angular_source_t`` and ``native_angular_source_p``. This collector is
 not called by ``step()`` or by the residual helper; callers must pass the
 collected arrays to ``evaluate_native_angular_transport_residual()`` when that
-is the intended test.
+is the intended test. The collector resets both source buffers on every call,
+so ``include_sources`` and ``include_boundaries`` select a fresh accounting
+view instead of accumulating previous collections.
 The current native-angular boundary contract is intentionally narrow: boundary
 hooks may read native angular momentum and return source arrays, but they may
 not mutate clocks, momentum, torque fields, residuals, candidates, or

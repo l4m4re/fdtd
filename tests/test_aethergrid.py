@@ -1096,6 +1096,47 @@ def test_aethergrid_collects_only_requested_native_angular_sources():
     np.testing.assert_allclose(np.asarray(collected_p), 0.5)
 
 
+def test_aethergrid_native_angular_source_collection_resets_each_call():
+    grid = fdtd.AetherGrid(shape=(3, 3, 3))
+    source_t = np.ones((3, 3, 3, 1)) * 0.25
+    source_p = np.ones((3, 3, 3, 1)) * 0.5
+    boundary_t = np.ones((3, 3, 3, 1)) * 0.75
+    boundary_p = np.ones((3, 3, 3, 1)) * 1.25
+
+    grid[1, 1, 1] = NativeAngularExchangeProbe(source_t, source_p, "sources")
+    grid[0, :, :] = NativeAngularExchangeProbe(
+        boundary_t,
+        boundary_p,
+        "boundaries",
+    )
+
+    collected_t, collected_p = grid.collect_native_angular_source_terms()
+    np.testing.assert_allclose(np.asarray(collected_t), 1.0)
+    np.testing.assert_allclose(np.asarray(collected_p), 1.75)
+
+    grid.native_angular_source_t[:, :, :, 0] = 99.0
+    grid.native_angular_source_p[:, :, :, 0] = 101.0
+    collected_t, collected_p = grid.collect_native_angular_source_terms(
+        include_sources=False,
+        include_boundaries=False,
+    )
+    np.testing.assert_allclose(np.asarray(collected_t), 0.0)
+    np.testing.assert_allclose(np.asarray(collected_p), 0.0)
+
+    collected_t, collected_p = grid.collect_native_angular_source_terms(
+        include_sources=False,
+    )
+    np.testing.assert_allclose(np.asarray(collected_t), 0.75)
+    np.testing.assert_allclose(np.asarray(collected_p), 1.25)
+
+    collected_t, collected_p = grid.collect_native_angular_source_terms()
+    np.testing.assert_allclose(np.asarray(collected_t), 1.0)
+    np.testing.assert_allclose(np.asarray(collected_p), 1.75)
+    collected_t, collected_p = grid.collect_native_angular_source_terms()
+    np.testing.assert_allclose(np.asarray(collected_t), 1.0)
+    np.testing.assert_allclose(np.asarray(collected_p), 1.75)
+
+
 def test_aethergrid_rejects_malformed_native_angular_source_terms():
     grid = fdtd.AetherGrid(shape=(3, 3, 3))
     source_t = np.ones((3, 3, 3, 1))
