@@ -613,6 +613,79 @@ def test_aether_angular_no_exchange_boundary_exposes_zero_exchange_terms():
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aethergrid_boundary_source_collection_mutates_only_source_buffers():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    grid.omega_t[:, :, :, 0] = 0.4
+    grid.omega_p[:, :, :, 0] = 0.6
+    grid.theta_t[:, :, :, 0] = 0.04
+    grid.theta_p[:, :, :, 0] = 0.06
+    grid.angular_inertia_t[:, :, :, 0] = 2.0
+    grid.angular_inertia_p[:, :, :, 0] = 3.0
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    grid.angular_momentum_t[-1, :, :, 0] = 0.5
+    grid.angular_momentum_p[-1, :, :, 0] = 0.25
+    grid.angular_torque_t[:, :, :, 0] = 0.2
+    grid.angular_torque_p[:, :, :, 0] = 0.3
+    grid.native_angular_tau[:, :, :, 0] = 0.1
+    grid.native_angular_transport_residual_t[:, :, :, 0] = 0.7
+    grid.native_angular_transport_residual_p[:, :, :, 0] = 0.9
+    grid.native_angular_momentum_candidate_t[:, :, :, 0] = 1.1
+    grid.native_angular_momentum_candidate_p[:, :, :, 0] = 1.3
+    snapshots = {
+        "omega_t": np.asarray(grid.omega_t).copy(),
+        "omega_p": np.asarray(grid.omega_p).copy(),
+        "theta_t": np.asarray(grid.theta_t).copy(),
+        "theta_p": np.asarray(grid.theta_p).copy(),
+        "angular_inertia_t": np.asarray(grid.angular_inertia_t).copy(),
+        "angular_inertia_p": np.asarray(grid.angular_inertia_p).copy(),
+        "angular_momentum_t": np.asarray(grid.angular_momentum_t).copy(),
+        "angular_momentum_p": np.asarray(grid.angular_momentum_p).copy(),
+        "angular_torque_t": np.asarray(grid.angular_torque_t).copy(),
+        "angular_torque_p": np.asarray(grid.angular_torque_p).copy(),
+        "native_angular_tau": np.asarray(grid.native_angular_tau).copy(),
+        "native_angular_transport_residual_t": np.asarray(
+            grid.native_angular_transport_residual_t
+        ).copy(),
+        "native_angular_transport_residual_p": np.asarray(
+            grid.native_angular_transport_residual_p
+        ).copy(),
+        "native_angular_momentum_candidate_t": np.asarray(
+            grid.native_angular_momentum_candidate_t
+        ).copy(),
+        "native_angular_momentum_candidate_p": np.asarray(
+            grid.native_angular_momentum_candidate_p
+        ).copy(),
+        "linear_a": np.asarray(grid.linear_a).copy(),
+        "angular_tau": np.asarray(grid.angular_tau).copy(),
+    }
+    grid[0, :, :] = fdtd.AetherAngularSpongeBoundary(
+        damping_t=0.25,
+        damping_p=0.15,
+    )
+    grid[-1, :, :] = fdtd.AetherAngularReflectiveBoundary(
+        response_rate_t=2.0,
+        response_rate_p=3.0,
+        sign_t=-1.0,
+        sign_p=1.0,
+    )
+
+    source_t, source_p = grid.collect_native_angular_source_terms()
+
+    expected_t = np.zeros((4, 4, 4, 1))
+    expected_p = np.zeros((4, 4, 4, 1))
+    expected_t[0, :, :, 0] = -0.25 * 0.75
+    expected_p[0, :, :, 0] = -0.15 * 1.25
+    expected_t[-1, :, :, 0] = 2.0 * (-0.75 - 0.5)
+    expected_p[-1, :, :, 0] = 3.0 * (1.25 - 0.25)
+    np.testing.assert_allclose(np.asarray(source_t), expected_t)
+    np.testing.assert_allclose(np.asarray(source_p), expected_p)
+
+    for name, snapshot in snapshots.items():
+        np.testing.assert_allclose(np.asarray(getattr(grid, name)), snapshot)
+    assert grid.time_steps_passed == 0
+
+
 def test_aethergrid_passive_momentum_predictor_no_exchange_boundary_hook_64_step():
     grid = fdtd.AetherGrid(shape=(4, 4, 4))
     delta = 0.05

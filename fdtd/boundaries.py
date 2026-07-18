@@ -145,8 +145,9 @@ class Boundary:
 class AetherAngularSpongeBoundary(Boundary):
     """Passive native-angular sponge exchange for ``AetherGrid`` diagnostics.
 
-    This boundary does not update Maxwell ``E`` / ``H`` fields and is not
-    called by ``AetherGrid.step()``. It only exposes
+    This boundary does not update Maxwell ``E`` / ``H`` fields, native angular
+    clocks, momentum, torque, residuals, or candidates, and is not called by
+    ``AetherGrid.step()``. It only exposes
     ``native_angular_source_terms()`` for
     ``AetherGrid.collect_native_angular_source_terms()``.
     """
@@ -197,7 +198,12 @@ class AetherAngularNoExchangeBoundary(Boundary):
 
 
 class AetherAngularReflectiveBoundary(Boundary):
-    """Passive native-angular mirror exchange for ``AetherGrid`` diagnostics."""
+    """Passive native-angular mirror exchange for ``AetherGrid`` diagnostics.
+
+    This boundary reads native angular momentum and returns explicit source
+    arrays only. It does not update clocks, momentum, torque, residuals,
+    candidates, or linear-sector state.
+    """
 
     def __init__(
         self,

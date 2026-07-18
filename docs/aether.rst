@@ -184,6 +184,10 @@ For opt-in experiments, scene elements may expose
 not called by ``step()`` or by the residual helper; callers must pass the
 collected arrays to ``evaluate_native_angular_transport_residual()`` when that
 is the intended test.
+The current native-angular boundary contract is intentionally narrow: boundary
+hooks may read native angular momentum and return source arrays, but they may
+not mutate clocks, momentum, torque fields, residuals, candidates, or
+linear-sector state.
 
 Caveat
 ------

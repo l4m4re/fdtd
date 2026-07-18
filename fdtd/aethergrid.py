@@ -778,7 +778,10 @@ class AetherGrid:
         ``angular_torque_p``. This method only sums those explicit terms into
         ``native_angular_source_t`` and ``native_angular_source_p``. It is not
         called by ``step()``, does not update angular momentum, and does not
-        make boundary exchange implicit in the residual helper.
+        make boundary exchange implicit in the residual helper. Current
+        boundary hooks are source-buffer contracts only: they may read native
+        angular momentum, but they must not mutate clocks, moments, torque
+        fields, residuals, candidates, or linear-sector state.
         """
 
         self.native_angular_source_t *= 0.0
