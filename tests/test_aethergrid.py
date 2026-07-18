@@ -829,6 +829,67 @@ def test_aethergrid_passive_momentum_predictor_sponge_boundary_hook_64_step():
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aethergrid_sponge_boundary_reduces_quadratic_energy():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    delta = 0.05
+    steps = 64
+    damping_t = np.zeros((4, 4, 4, 1))
+    damping_p = np.zeros((4, 4, 4, 1))
+    damping_t[0, :, :, 0] = 0.25
+    damping_t[-1, :, :, 0] = 0.25
+    damping_p[0, :, :, 0] = 0.15
+    damping_p[-1, :, :, 0] = 0.15
+    grid.angular_inertia_t[:, :, :, 0] = 2.0
+    grid.angular_inertia_p[:, :, :, 0] = 4.0
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    initial_momentum_t = np.asarray(grid.angular_momentum_t).copy()
+    initial_momentum_p = np.asarray(grid.angular_momentum_p).copy()
+    _, _, previous_energy = grid.evaluate_native_angular_kinetic_energy()
+    grid[0, :, :] = fdtd.AetherAngularSpongeBoundary(
+        damping_t=0.25,
+        damping_p=0.15,
+    )
+    grid[-1, :, :] = fdtd.AetherAngularSpongeBoundary(
+        damping_t=0.25,
+        damping_p=0.15,
+    )
+
+    for step in range(steps):
+        source_t, source_p = grid.collect_native_angular_source_terms()
+        candidate_t, candidate_p = grid.predict_native_angular_momentum_step(
+            delta=delta,
+            source_t=source_t,
+            source_p=source_p,
+        )
+        expected_t = initial_momentum_t * (1.0 - damping_t * delta) ** (step + 1)
+        expected_p = initial_momentum_p * (1.0 - damping_p * delta) ** (step + 1)
+        _, _, candidate_energy = grid.evaluate_native_angular_kinetic_energy(
+            momentum_t=candidate_t,
+            momentum_p=candidate_p,
+        )
+        expected_energy_t = 0.5 * expected_t * expected_t / 2.0
+        expected_energy_p = 0.5 * expected_p * expected_p / 4.0
+        expected_energy = np.sum(expected_energy_t + expected_energy_p)
+
+        np.testing.assert_allclose(np.asarray(candidate_t), expected_t)
+        np.testing.assert_allclose(np.asarray(candidate_p), expected_p)
+        np.testing.assert_allclose(float(candidate_energy), expected_energy)
+        assert float(candidate_energy) <= float(previous_energy)
+        assert np.all(np.isfinite(np.asarray(candidate_t)))
+        assert np.all(np.isfinite(np.asarray(candidate_p)))
+
+        # Candidate-only sponge-energy accounting benchmark; production
+        # dynamics still do not call or apply the predictor.
+        grid.angular_momentum_t = grid.native_angular_momentum_candidate_t
+        grid.angular_momentum_p = grid.native_angular_momentum_candidate_p
+        previous_energy = candidate_energy
+
+    assert grid.time_steps_passed == 0
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
 def test_aethergrid_transport_residual_matches_staged_torque_minus_rhs():
     grid = fdtd.AetherGrid(shape=(4, 4, 4))
     grid.ell_t[:, :, :, 0] = 2.0

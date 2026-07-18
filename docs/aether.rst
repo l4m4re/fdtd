@@ -173,6 +173,9 @@ still diagnostic source accounting, not a production wave-reflection boundary.
 quadratic bookkeeping diagnostic ``0.5*L**2/I`` for the native angular
 momentum channels. It is used to check candidate-only source accounting, not to
 define a Hamiltonian, detector observable, or production energy update.
+The sponge-boundary energy benchmark uses the same diagnostic to require
+monotone decay under local ``-damping*L`` exchange on boundary slices. That is
+still damping bookkeeping; it is not yet an absorbing boundary proof.
 
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.
