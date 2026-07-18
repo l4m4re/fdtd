@@ -5,6 +5,7 @@ Available Boundaries:
  - PeriodicBoundary
  - PML
  - AetherAngularSpongeBoundary
+ - AetherAngularNoExchangeBoundary
 
 """
 ## Imports
@@ -177,6 +178,21 @@ class AetherAngularSpongeBoundary(Boundary):
             f"{self.__class__.__name__}(damping_t={self.damping_t}, "
             f"damping_p={self.damping_p}, name={repr(self.name)})"
         )
+
+
+class AetherAngularNoExchangeBoundary(Boundary):
+    """Passive native-angular boundary with explicit zero exchange."""
+
+    def native_angular_source_terms(self):
+        """Return zero native-angular exchange arrays for this boundary."""
+
+        return (
+            bd.zeros_like(self.grid.angular_torque_t),
+            bd.zeros_like(self.grid.angular_torque_p),
+        )
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(name={repr(self.name)})"
 
 
 ## Periodic Boundaries

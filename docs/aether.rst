@@ -161,6 +161,10 @@ The first opt-in boundary hook is ``AetherAngularSpongeBoundary``. It exposes
 on its registered grid slice when callers explicitly collect native angular
 source terms. It is a passive damping hook, not a Maxwell PML, absorber, or
 reflector.
+``AetherAngularNoExchangeBoundary`` is the matching passive closed-boundary
+baseline: it exposes the same hook but returns zero exchange arrays. It is not
+a reflection law; it only makes "boundary present, no native-angular exchange"
+explicit in the source-term contract.
 
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.
