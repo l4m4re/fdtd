@@ -19,6 +19,7 @@ from .boundaries import (
     PML,
     AetherAngularSpongeBoundary,
     AetherAngularNoExchangeBoundary,
+    AetherAngularReflectiveBoundary,
 )
 from .backend import backend
 from .backend import set_backend

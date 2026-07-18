@@ -6,6 +6,7 @@ Available Boundaries:
  - PML
  - AetherAngularSpongeBoundary
  - AetherAngularNoExchangeBoundary
+ - AetherAngularReflectiveBoundary
 
 """
 ## Imports
@@ -193,6 +194,68 @@ class AetherAngularNoExchangeBoundary(Boundary):
 
     def __repr__(self):
         return f"{self.__class__.__name__}(name={repr(self.name)})"
+
+
+class AetherAngularReflectiveBoundary(Boundary):
+    """Passive native-angular mirror exchange for ``AetherGrid`` diagnostics."""
+
+    def __init__(
+        self,
+        response_rate_t: float,
+        response_rate_p: float,
+        sign_t: float = -1.0,
+        sign_p: float = -1.0,
+        name: str = None,
+    ):
+        super().__init__(name=name)
+        self.response_rate_t = float(response_rate_t)
+        self.response_rate_p = float(response_rate_p)
+        self.sign_t = float(sign_t)
+        self.sign_p = float(sign_p)
+
+    def _boundary_and_mirror_slices(self):
+        if isinstance(self.x, int) and self.x in (0, -1):
+            boundary = (self.x, self.y, self.z, slice(None))
+            mirror_x = 1 if self.x == 0 else -2
+            mirror = (mirror_x, self.y, self.z, slice(None))
+            return boundary, mirror
+        if isinstance(self.y, int) and self.y in (0, -1):
+            boundary = (self.x, self.y, self.z, slice(None))
+            mirror_y = 1 if self.y == 0 else -2
+            mirror = (self.x, mirror_y, self.z, slice(None))
+            return boundary, mirror
+        if isinstance(self.z, int) and self.z in (0, -1):
+            boundary = (self.x, self.y, self.z, slice(None))
+            mirror_z = 1 if self.z == 0 else -2
+            mirror = (self.x, self.y, mirror_z, slice(None))
+            return boundary, mirror
+        raise ValueError(
+            "AetherAngularReflectiveBoundary must be placed on a single "
+            "outer grid face"
+        )
+
+    def native_angular_source_terms(self):
+        """Return explicit mirror-relaxation exchange arrays."""
+
+        boundary, mirror = self._boundary_and_mirror_slices()
+        source_t = bd.zeros_like(self.grid.angular_torque_t)
+        source_p = bd.zeros_like(self.grid.angular_torque_p)
+        source_t[boundary] = self.response_rate_t * (
+            self.sign_t * self.grid.angular_momentum_t[mirror]
+            - self.grid.angular_momentum_t[boundary]
+        )
+        source_p[boundary] = self.response_rate_p * (
+            self.sign_p * self.grid.angular_momentum_p[mirror]
+            - self.grid.angular_momentum_p[boundary]
+        )
+        return source_t, source_p
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(response_rate_t={self.response_rate_t}, "
+            f"response_rate_p={self.response_rate_p}, sign_t={self.sign_t}, "
+            f"sign_p={self.sign_p}, name={repr(self.name)})"
+        )
 
 
 ## Periodic Boundaries

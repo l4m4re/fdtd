@@ -165,6 +165,10 @@ reflector.
 baseline: it exposes the same hook but returns zero exchange arrays. It is not
 a reflection law; it only makes "boundary present, no native-angular exchange"
 explicit in the source-term contract.
+``AetherAngularReflectiveBoundary`` adds a passive mirror-relaxation hook: it
+uses the adjacent interior cell as the target state and contributes
+``rate*(sign*L_mirror - L_boundary)`` on the registered boundary slice. This is
+still diagnostic source accounting, not a production wave-reflection boundary.
 
 For opt-in experiments, scene elements may expose
 ``native_angular_source_terms()`` and return ``(source_t, source_p)`` arrays.

@@ -625,6 +625,79 @@ def test_aethergrid_passive_momentum_predictor_no_exchange_boundary_hook_64_step
     assert not np.any(np.asarray(grid.linear_a))
 
 
+def test_aether_angular_reflective_boundary_exposes_mirror_exchange_terms():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    response_rate_t = 20.0
+    response_rate_p = 10.0
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    grid.angular_momentum_t[0, :, :, 0] = 0.5
+    grid.angular_momentum_p[0, :, :, 0] = 0.25
+    grid[0, :, :] = fdtd.AetherAngularReflectiveBoundary(
+        response_rate_t=response_rate_t,
+        response_rate_p=response_rate_p,
+        sign_t=-1.0,
+        sign_p=1.0,
+    )
+
+    source_t, source_p = grid.collect_native_angular_source_terms()
+
+    expected_t = np.zeros((4, 4, 4, 1))
+    expected_p = np.zeros((4, 4, 4, 1))
+    expected_t[0, :, :, 0] = response_rate_t * (-0.75 - 0.5)
+    expected_p[0, :, :, 0] = response_rate_p * (1.25 - 0.25)
+    np.testing.assert_allclose(np.asarray(source_t), expected_t)
+    np.testing.assert_allclose(np.asarray(source_p), expected_p)
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
+def test_aethergrid_passive_momentum_predictor_reflective_boundary_hook_64_step():
+    grid = fdtd.AetherGrid(shape=(4, 4, 4))
+    delta = 0.05
+    steps = 64
+    grid.angular_momentum_t[:, :, :, 0] = 0.75
+    grid.angular_momentum_p[:, :, :, 0] = 1.25
+    grid.angular_momentum_t[0, :, :, 0] = 0.5
+    grid.angular_momentum_p[0, :, :, 0] = 0.25
+    initial_interior_t = np.asarray(grid.angular_momentum_t[1:]).copy()
+    initial_interior_p = np.asarray(grid.angular_momentum_p[1:]).copy()
+    expected_boundary_t = -np.asarray(grid.angular_momentum_t[1]).copy()
+    expected_boundary_p = np.asarray(grid.angular_momentum_p[1]).copy()
+    grid[0, :, :] = fdtd.AetherAngularReflectiveBoundary(
+        response_rate_t=1.0 / delta,
+        response_rate_p=1.0 / delta,
+        sign_t=-1.0,
+        sign_p=1.0,
+    )
+
+    for _ in range(steps):
+        source_t, source_p = grid.collect_native_angular_source_terms()
+        candidate_t, candidate_p = grid.predict_native_angular_momentum_step(
+            delta=delta,
+            source_t=source_t,
+            source_p=source_p,
+        )
+        candidate_t = np.asarray(candidate_t)
+        candidate_p = np.asarray(candidate_p)
+
+        np.testing.assert_allclose(candidate_t[0], expected_boundary_t)
+        np.testing.assert_allclose(candidate_p[0], expected_boundary_p)
+        np.testing.assert_allclose(candidate_t[1:], initial_interior_t)
+        np.testing.assert_allclose(candidate_p[1:], initial_interior_p)
+        assert np.all(np.isfinite(candidate_t))
+        assert np.all(np.isfinite(candidate_p))
+
+        # Candidate-only reflection accounting benchmark; production dynamics
+        # still do not call or apply the predictor.
+        grid.angular_momentum_t = grid.native_angular_momentum_candidate_t
+        grid.angular_momentum_p = grid.native_angular_momentum_candidate_p
+
+    assert grid.time_steps_passed == 0
+    assert not np.any(np.asarray(grid.angular_tau))
+    assert not np.any(np.asarray(grid.linear_a))
+
+
 def test_aethergrid_passive_momentum_predictor_sponge_boundary_hook_64_step():
     grid = fdtd.AetherGrid(shape=(4, 4, 4))
     delta = 0.05
