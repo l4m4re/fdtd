@@ -30,7 +30,11 @@ package is meant to be inspectable and educational.
 
 ## Imports
 
+import numpy as np
+
 # typing
+from typing import Tuple
+
 from .typing_ import Tensorlike
 
 # relative
@@ -279,3 +283,307 @@ def grad(p: Tensorlike) -> Tensorlike:
     grad[:, :, :-1, 2] = (p[:, :, 1:, 0] - p[:, :, :-1, 0])
     
     return grad
+
+
+## Legacy staggered-grid compatibility operators
+#
+# ``PotentialGrid`` uses the earlier STPT staggered layout with separate
+# component arrays. Keep these helpers here so legacy simulator knowledge can
+# live inside the active ``extern/fdtd`` package while the current ``AetherGrid``
+# API continues to use the compact 4D operators above.
+
+
+def gradient(
+    scalar_field: Tensorlike,
+    dx: float = 1.0,
+    dy: float = None,
+    dz: float = None,
+) -> Tuple[Tensorlike, Tensorlike, Tensorlike]:
+    """Calculate a cell-centered scalar gradient on staggered faces."""
+
+    if dy is None:
+        dy = dx
+    if dz is None:
+        dz = dx
+
+    gx = bd.zeros((scalar_field.shape[0] + 1, scalar_field.shape[1], scalar_field.shape[2]))
+    gy = bd.zeros((scalar_field.shape[0], scalar_field.shape[1] + 1, scalar_field.shape[2]))
+    gz = bd.zeros((scalar_field.shape[0], scalar_field.shape[1], scalar_field.shape[2] + 1))
+
+    gx[1:-1, :, :] = (scalar_field[1:, :, :] - scalar_field[:-1, :, :]) / dx
+    gy[:, 1:-1, :] = (scalar_field[:, 1:, :] - scalar_field[:, :-1, :]) / dy
+    gz[:, :, 1:-1] = (scalar_field[:, :, 1:] - scalar_field[:, :, :-1]) / dz
+
+    gx[0, :, :] = gx[1, :, :]
+    gx[-1, :, :] = gx[-2, :, :]
+    gy[:, 0, :] = gy[:, 1, :]
+    gy[:, -1, :] = gy[:, -2, :]
+    gz[:, :, 0] = gz[:, :, 1]
+    gz[:, :, -1] = gz[:, :, -2]
+
+    return gx, gy, gz
+
+
+def divergence(
+    vx: Tensorlike,
+    vy: Tensorlike,
+    vz: Tensorlike,
+    dx: float = 1.0,
+) -> Tensorlike:
+    """Calculate divergence from separate face-centered vector components."""
+
+    return (
+        vx[1:, :, :] - vx[:-1, :, :]
+        + vy[:, 1:, :] - vy[:, :-1, :]
+        + vz[:, :, 1:] - vz[:, :, :-1]
+    ) / dx
+
+
+def _curl_face_to_edge_staggered(
+    vx: Tensorlike,
+    vy: Tensorlike,
+    vz: Tensorlike,
+    dx: float = 1.0,
+) -> Tuple[Tensorlike, Tensorlike, Tensorlike]:
+    """Curl of separate face-centered components, returned on edge slots."""
+
+    nx = vx.shape[0] - 1
+    ny = vy.shape[1] - 1
+    nz = vz.shape[2] - 1
+
+    curl_x = bd.zeros((nx, ny + 1, nz + 1))
+    curl_y = bd.zeros((nx + 1, ny, nz + 1))
+    curl_z = bd.zeros((nx + 1, ny + 1, nz))
+
+    curl_x[:, 1:-1, 1:-1] = (
+        (vz[:, 1:, 1:-1] - vz[:, :-1, 1:-1]) / dx
+        - (vy[:, 1:-1, 1:] - vy[:, 1:-1, :-1]) / dx
+    )
+    curl_y[1:-1, :, 1:-1] = (
+        (vx[1:-1, :, 1:] - vx[1:-1, :, :-1]) / dx
+        - (vz[1:, :, 1:-1] - vz[:-1, :, 1:-1]) / dx
+    )
+    curl_z[1:-1, 1:-1, :] = (
+        (vy[1:, 1:-1, :] - vy[:-1, 1:-1, :]) / dx
+        - (vx[1:-1, 1:, :] - vx[1:-1, :-1, :]) / dx
+    )
+
+    curl_x[:, 0, :] = curl_x[:, 1, :]
+    curl_x[:, -1, :] = curl_x[:, -2, :]
+    curl_x[:, :, 0] = curl_x[:, :, 1]
+    curl_x[:, :, -1] = curl_x[:, :, -2]
+    curl_y[0, :, :] = curl_y[1, :, :]
+    curl_y[-1, :, :] = curl_y[-2, :, :]
+    curl_y[:, :, 0] = curl_y[:, :, 1]
+    curl_y[:, :, -1] = curl_y[:, :, -2]
+    curl_z[0, :, :] = curl_z[1, :]
+    curl_z[-1, :, :] = curl_z[-2, :]
+    curl_z[:, 0, :] = curl_z[1, :]
+    curl_z[:, -1, :] = curl_z[-2, :]
+    curl_z[:, :, 0] = curl_z[:, :, 1]
+    curl_z[:, :, -1] = curl_z[:, :, -2]
+
+    return curl_x, curl_y, curl_z
+
+
+def _curl_edge_to_face_staggered(
+    wx: Tensorlike,
+    wy: Tensorlike,
+    wz: Tensorlike,
+    dx: float = 1.0,
+) -> Tuple[Tensorlike, Tensorlike, Tensorlike]:
+    """Curl of separate edge-centered components, returned on face slots."""
+
+    nx_wx, ny_wx, nz_wx = wx.shape
+    nx_wy, ny_wy, nz_wy = wy.shape
+    nx_wz, ny_wz, nz_wz = wz.shape
+
+    curl_x = bd.zeros((nx_wx + 1, ny_wx, nz_wx))
+    curl_y = bd.zeros((nx_wy, ny_wy + 1, nz_wy))
+    curl_z = bd.zeros((nx_wz, ny_wz, nz_wz + 1))
+
+    for i in range(1, nx_wx):
+        for j in range(1, ny_wx - 1):
+            for k in range(1, nz_wx - 1):
+                curl_x[i, j, k] = (
+                    (wz[i - 1, j, k] - wz[i - 1, j - 1, k]) / dx
+                    - (wy[i - 1, j - 1, k] - wy[i - 1, j - 1, k - 1]) / dx
+                )
+
+    for i in range(1, nx_wy - 1):
+        for j in range(1, ny_wy):
+            for k in range(1, nz_wy - 1):
+                curl_y[i, j, k] = (
+                    (wx[i - 1, j - 1, k] - wx[i - 1, j - 1, k - 1]) / dx
+                    - (wz[i, j - 1, k] - wz[i - 1, j - 1, k]) / dx
+                )
+
+    for i in range(1, nx_wz - 1):
+        for j in range(1, ny_wz - 1):
+            for k in range(1, nz_wz):
+                curl_z[i, j, k] = (
+                    (wy[i, j - 1, k - 1] - wy[i - 1, j - 1, k - 1]) / dx
+                    - (wx[i - 1, j, k - 1] - wx[i - 1, j - 1, k - 1]) / dx
+                )
+
+    curl_x[0, :, :] = curl_x[1, :, :]
+    curl_x[-1, :, :] = curl_x[-2, :, :]
+    curl_x[:, 0, :] = curl_x[:, 1, :]
+    curl_x[:, -1, :] = curl_x[:, -2, :]
+    curl_x[:, :, 0] = curl_x[:, :, 1]
+    curl_x[:, :, -1] = curl_x[:, :, -2]
+    curl_y[0, :, :] = curl_y[1, :, :]
+    curl_y[-1, :, :] = curl_y[-2, :, :]
+    curl_y[:, 0, :] = curl_y[:, 1, :]
+    curl_y[:, -1, :] = curl_y[:, -2, :]
+    curl_y[:, :, 0] = curl_y[:, :, 1]
+    curl_y[:, :, -1] = curl_y[:, :, -2]
+    curl_z[0, :, :] = curl_z[1, :]
+    curl_z[-1, :, :] = curl_z[-2, :]
+    curl_z[:, 0, :] = curl_z[1, :]
+    curl_z[:, -1, :] = curl_z[-2, :]
+    curl_z[:, :, 0] = curl_z[:, :, 1]
+    curl_z[:, :, -1] = curl_z[:, :, -2]
+
+    return curl_x, curl_y, curl_z
+
+
+def curl_face_to_edge(*args):
+    """Dispatch curl from face slots to edge slots for current or legacy APIs."""
+
+    if len(args) == 1:
+        return curl_H(args[0])
+    if len(args) in (3, 4):
+        dx = args[3] if len(args) == 4 else 1.0
+        return _curl_face_to_edge_staggered(args[0], args[1], args[2], dx)
+    raise TypeError("curl_face_to_edge expects 1 argument or vx, vy, vz[, dx]")
+
+
+def curl_edge_to_face(*args):
+    """Dispatch curl from edge slots to face slots for current or legacy APIs."""
+
+    if len(args) == 1:
+        return curl_E(args[0])
+    if len(args) in (3, 4):
+        dx = args[3] if len(args) == 4 else 1.0
+        return _curl_edge_to_face_staggered(args[0], args[1], args[2], dx)
+    raise TypeError("curl_edge_to_face expects 1 argument or wx, wy, wz[, dx]")
+
+
+def vector_laplacian(
+    vx: Tensorlike,
+    vy: Tensorlike,
+    vz: Tensorlike,
+    dx: float = 1.0,
+) -> Tuple[Tensorlike, Tensorlike, Tensorlike]:
+    """Calculate the vector Laplacian for separate staggered components."""
+
+    lap_vx = bd.zeros_like(vx)
+    lap_vy = bd.zeros_like(vy)
+    lap_vz = bd.zeros_like(vz)
+
+    lap_vx[1:-1, 1:-1, 1:-1] = (
+        vx[2:, 1:-1, 1:-1]
+        + vx[:-2, 1:-1, 1:-1]
+        + vx[1:-1, 2:, 1:-1]
+        + vx[1:-1, :-2, 1:-1]
+        + vx[1:-1, 1:-1, 2:]
+        + vx[1:-1, 1:-1, :-2]
+        - 6 * vx[1:-1, 1:-1, 1:-1]
+    ) / (dx * dx)
+    lap_vy[1:-1, 1:-1, 1:-1] = (
+        vy[2:, 1:-1, 1:-1]
+        + vy[:-2, 1:-1, 1:-1]
+        + vy[1:-1, 2:, 1:-1]
+        + vy[1:-1, :-2, 1:-1]
+        + vy[1:-1, 1:-1, 2:]
+        + vy[1:-1, 1:-1, :-2]
+        - 6 * vy[1:-1, 1:-1, 1:-1]
+    ) / (dx * dx)
+    lap_vz[1:-1, 1:-1, 1:-1] = (
+        vz[2:, 1:-1, 1:-1]
+        + vz[:-2, 1:-1, 1:-1]
+        + vz[1:-1, 2:, 1:-1]
+        + vz[1:-1, :-2, 1:-1]
+        + vz[1:-1, 1:-1, 2:]
+        + vz[1:-1, 1:-1, :-2]
+        - 6 * vz[1:-1, 1:-1, 1:-1]
+    ) / (dx * dx)
+
+    for arr in (lap_vx, lap_vy, lap_vz):
+        arr[0, :, :] = arr[1, :, :]
+        arr[-1, :, :] = arr[-2, :, :]
+        arr[:, 0, :] = arr[:, 1, :]
+        arr[:, -1, :] = arr[:, -2, :]
+        arr[:, :, 0] = arr[:, :, 1]
+        arr[:, :, -1] = arr[:, :, -2]
+
+    return lap_vx, lap_vy, lap_vz
+
+
+def scalar_laplacian(
+    scalar_field: Tensorlike,
+    dx: float = 1.0,
+    dy: float = None,
+    dz: float = None,
+) -> Tensorlike:
+    """Calculate a scalar Laplacian on cell-centered data."""
+
+    if dy is None:
+        dy = dx
+    if dz is None:
+        dz = dx
+
+    lap = bd.zeros_like(scalar_field)
+    lap[1:-1, 1:-1, 1:-1] = (
+        (scalar_field[2:, 1:-1, 1:-1] + scalar_field[:-2, 1:-1, 1:-1]) / (dx * dx)
+        + (scalar_field[1:-1, 2:, 1:-1] + scalar_field[1:-1, :-2, 1:-1]) / (dy * dy)
+        + (scalar_field[1:-1, 1:-1, 2:] + scalar_field[1:-1, 1:-1, :-2]) / (dz * dz)
+        - 2
+        * scalar_field[1:-1, 1:-1, 1:-1]
+        * (1 / (dx * dx) + 1 / (dy * dy) + 1 / (dz * dz))
+    )
+
+    lap[0, :, :] = lap[1, :, :]
+    lap[-1, :, :] = lap[-2, :, :]
+    lap[:, 0, :] = lap[:, 1, :]
+    lap[:, -1, :] = lap[:, -2, :]
+    lap[:, :, 0] = lap[:, :, 1]
+    lap[:, :, -1] = lap[:, :, -2]
+
+    return lap
+
+
+def helmholtz_decomposition(
+    vx: Tensorlike,
+    vy: Tensorlike,
+    vz: Tensorlike,
+    dx: float = 1.0,
+) -> Tuple[Tensorlike, Tensorlike, Tensorlike, Tensorlike, Tensorlike, Tensorlike]:
+    """Legacy approximate Helmholtz decomposition for separate components."""
+
+    div_v = divergence(vx, vy, vz, dx)
+    scalar_potential = bd.zeros_like(div_v)
+
+    for _ in range(30):
+        lap_phi = scalar_laplacian(scalar_potential, dx)
+        scalar_potential += 0.1 * (div_v - lap_phi)
+
+    vx_irrot, vy_irrot, vz_irrot = gradient(scalar_potential, dx)
+    vx_sol = vx - vx_irrot
+    vy_sol = vy - vy_irrot
+    vz_sol = vz - vz_irrot
+
+    return vx_irrot, vy_irrot, vz_irrot, vx_sol, vy_sol, vz_sol
+
+
+def quantize_circulation(
+    field: Tensorlike,
+    dx: float,
+    kinematic_viscosity: float,
+) -> Tensorlike:
+    """Quantize a field component to multiples of a circulation quantum."""
+
+    del dx
+    quantum = kinematic_viscosity
+    return bd.round(field / quantum) * quantum

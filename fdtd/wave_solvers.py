@@ -7,8 +7,8 @@ wave phenomena in the kinetic substrate. These solvers handle the distinct
 wave equations that emerge from the vector Laplacian formulation.
 
 References:
-- Theory/vector_laplacian/wave_equations.md - Wave equations theory
-- Theory/equation_reference.tex - Complete equation reference
+- Theory/theoretical_foundations.md - Wave equations theory
+- Theory/field_and_equation_reference.md - Complete equation reference
 """
 
 import numpy as np
@@ -23,10 +23,11 @@ class FirstSoundSolver:
     First sound represents oscillations in the substrate's density, analogous
     to pressure waves in classical fluids or longitudinal waves in elastic media.
     
-    The wave equation is:
+    The reference-background wave equation is:
     ∂²ρ'/∂t² = (η/ρ₀)∇²ρ'
-    
-    With wave speed c₁ = √(η/ρ₀)
+
+    In the variable-density model used elsewhere in the repository, this
+    becomes a local closure with k(x,t)=η/ρ(x,t).
     """
     
     def __init__(self, nx: int, ny: int, nz: int, dx: float, dt: float, 
@@ -57,6 +58,9 @@ class FirstSoundSolver:
         self.dt = dt
         self.viscosity = viscosity
         self.background_density = background_density
+        self.density_floor = max(float(background_density) * 1e-12, np.finfo(float).tiny)
+        self.density = self.xp.ones((nx, ny, nz)) * background_density
+        self.local_circulation = self.xp.ones((nx, ny, nz)) * (viscosity / background_density)
         
         # Wave speed
         self.wave_speed = np.sqrt(viscosity / background_density)
@@ -78,6 +82,20 @@ class FirstSoundSolver:
         self.vx = self.xp.zeros((nx, ny, nz))
         self.vy = self.xp.zeros((nx, ny, nz))
         self.vz = self.xp.zeros((nx, ny, nz))
+
+    def update_density_field(self, density):
+        """
+        Update the local density field used by the first-sound solver.
+
+        This keeps the linearized wave solver aligned with the repository-wide
+        closure k(x,t) = η/ρ(x,t), while still allowing a background density to
+        define the initial reference state.
+        """
+
+        density_np = np.maximum(self.xp.numpy(density), self.density_floor)
+        self.density = self.xp.array(density_np)
+        self.local_circulation = self.viscosity / self.density
+        self.wave_speed = float(np.sqrt(np.max(density_np * 0 + self.viscosity / density_np)))
     
     def add_gaussian_perturbation(self, center: Tuple[int, int, int], 
                                  amplitude: float, width: float):
@@ -136,8 +154,7 @@ class FirstSoundSolver:
         )
         
         # Update velocity perturbation (∂ρ'/∂t)
-        wave_speed_squared = self.viscosity / self.background_density
-        self.velocity_perturbation += self.dt * wave_speed_squared * lap_density
+        self.velocity_perturbation += self.dt * self.local_circulation * lap_density
         
         # Update density perturbation
         self.density_perturbation += self.dt * self.velocity_perturbation
@@ -187,7 +204,13 @@ class SecondSoundSolver:
         self.dx = dx
         self.dt = dt
         self.viscosity = viscosity
-        self.density = density
+        self.density_floor = max(float(density) * 1e-12, np.finfo(float).tiny)
+        self.density = self.xp.ones((nx, ny, nz)) * density
+        (
+            self.face_density_x,
+            self.face_density_y,
+            self.face_density_z,
+        ) = self._density_to_face_fields()
         
         # Fields - use backend's array creation
         self.temperature_perturbation = self.xp.zeros((nx, ny, nz))
@@ -201,6 +224,46 @@ class SecondSoundSolver:
         self.ax = self.xp.zeros((nx, ny, nz))
         self.ay = self.xp.zeros((nx, ny, nz))
         self.az = self.xp.zeros((nx, ny, nz))
+
+    def _density_to_face_fields(self):
+        """Interpolate cell-centered density to acceleration face slots."""
+
+        density_np = np.asarray(self.xp.numpy(self.density))
+        if density_np.ndim == 0:
+            density_np = np.ones((self.nx, self.ny, self.nz)) * float(density_np)
+        density_np = np.maximum(density_np, self.density_floor)
+        rho = self.xp.array(density_np)
+
+        rho_x = self.xp.zeros((self.nx + 1, self.ny, self.nz))
+        rho_y = self.xp.zeros((self.nx, self.ny + 1, self.nz))
+        rho_z = self.xp.zeros((self.nx, self.ny, self.nz + 1))
+
+        rho_x[1:-1, :, :] = 0.5 * (rho[:-1, :, :] + rho[1:, :, :])
+        rho_x[0, :, :] = rho[0, :, :]
+        rho_x[-1, :, :] = rho[-1, :, :]
+
+        rho_y[:, 1:-1, :] = 0.5 * (rho[:, :-1, :] + rho[:, 1:, :])
+        rho_y[:, 0, :] = rho[:, 0, :]
+        rho_y[:, -1, :] = rho[:, -1, :]
+
+        rho_z[:, :, 1:-1] = 0.5 * (rho[:, :, :-1] + rho[:, :, 1:])
+        rho_z[:, :, 0] = rho[:, :, 0]
+        rho_z[:, :, -1] = rho[:, :, -1]
+
+        return rho_x, rho_y, rho_z
+
+    def update_density_field(self, density):
+        """
+        Update the local density field used by the second-sound solver.
+        """
+
+        density_np = np.maximum(self.xp.numpy(density), self.density_floor)
+        self.density = self.xp.array(density_np)
+        (
+            self.face_density_x,
+            self.face_density_y,
+            self.face_density_z,
+        ) = self._density_to_face_fields()
     
     def add_gaussian_perturbation(self, center: Tuple[int, int, int], 
                                  amplitude: float, width: float):
@@ -247,11 +310,10 @@ class SecondSoundSolver:
             self.temperature_potential, self.dx, self.dx, self.dx
         )
         
-        # Scale by -1/(ρ) to get the actual acceleration
-        factor = -1.0 / self.density
-        self.ax *= factor
-        self.ay *= factor
-        self.az *= factor
+        # Scale by face-collocated -1/(ρ) to get the actual acceleration.
+        self.ax *= -1.0 / self.face_density_x
+        self.ay *= -1.0 / self.face_density_y
+        self.az *= -1.0 / self.face_density_z
     
     def step(self):
         """

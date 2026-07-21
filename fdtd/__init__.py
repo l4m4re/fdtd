@@ -5,6 +5,7 @@ __version__ = "0.3.6"
 
 from .grid import Grid
 from .aethergrid import AetherGrid
+from .potentialgrid import PotentialGrid, C_LIGHT, VISCOSITY
 from .sources import (
     PointSource,
     LineSource,

@@ -6,12 +6,17 @@ This module implements a computational grid for simulating the kinetic substrate
 according to Space Time Potential Theory. It models the action flux field (C)
 and radiosity field (I) to capture electromagnetic and gravitational effects.
 
-The simulation is based on the fundamental principle:
-    a = -η/ρ·Δv
+The simulation is based on the density-dependent closure:
+    a = -(η Δv)/ρ
+
+with a local circulation field
+    k(x, t) = η/ρ(x, t)
+
+The shorthand a = -kΔv is therefore only a local or reference-background form.
 
 References:
-- Theory/vector_laplacian/foundation.md - Mathematical foundations
-- Theory/equation_reference.tex - Complete equation reference
+- Theory/theoretical_foundations.md - Mathematical foundations
+- Theory/field_and_equation_reference.md - Field and equation reference
 """
 
 import numpy as np
@@ -84,7 +89,12 @@ class PotentialGrid:
             
         self.viscosity = viscosity
         self.background_density = background_density
-        self.kinematic_viscosity = viscosity / background_density
+        self.reference_circulation = viscosity / background_density
+        self.kinematic_viscosity = self.reference_circulation
+        self.density_floor = max(
+            float(background_density) * 1e-12,
+            np.finfo(float).tiny,
+        )
         
         # Initialize staggered grid fields
         # Velocity components (on faces)
@@ -119,9 +129,17 @@ class PotentialGrid:
         
         # Scalar fields (at cell centers)
         self.density = self.xp.ones((nx, ny, nz)) * background_density
+        self.local_circulation = self.xp.zeros((nx, ny, nz))
+        self.face_density_x = self.xp.zeros((nx + 1, ny, nz))
+        self.face_density_y = self.xp.zeros((nx, ny + 1, nz))
+        self.face_density_z = self.xp.zeros((nx, ny, nz + 1))
+        self.face_circulation_x = self.xp.zeros((nx + 1, ny, nz))
+        self.face_circulation_y = self.xp.zeros((nx, ny + 1, nz))
+        self.face_circulation_z = self.xp.zeros((nx, ny, nz + 1))
         self.scalar_potential = self.xp.zeros((nx, ny, nz))  # φ = ∇·C
         self.temperature_potential = self.xp.zeros((nx, ny, nz))  # T = ∇·I
         self.temperature = self.xp.zeros((nx, ny, nz))
+        self.update_medium_fields()
         
         # Add wave solvers
         self.first_sound = FirstSoundSolver(
@@ -143,6 +161,60 @@ class PotentialGrid:
         print(f"dx={dx}m, dt={self.dt:.2e}s")
         print(f"Viscosity: {viscosity:.2e} Pa·s")
         print(f"Background density: {background_density:.2e} kg/m³")
+        print(f"Reference circulation: {self.reference_circulation:.2e} m²/s")
+
+    def _density_to_face_fields(self):
+        """
+        Interpolate cell-centered density to the staggered velocity faces.
+
+        The STPT closure divides the Laplacian-equivalent force density by the
+        local mass density after the spatial operator has been formed, so the
+        face-centered acceleration update uses density values collocated with
+        the face-centered velocity components.
+        """
+
+        rho = self.xp.array(
+            np.maximum(self.xp.numpy(self.density), self.density_floor)
+        )
+
+        rho_x = self.xp.zeros((self.nx + 1, self.ny, self.nz))
+        rho_y = self.xp.zeros((self.nx, self.ny + 1, self.nz))
+        rho_z = self.xp.zeros((self.nx, self.ny, self.nz + 1))
+
+        rho_x[1:-1, :, :] = 0.5 * (rho[:-1, :, :] + rho[1:, :, :])
+        rho_x[0, :, :] = rho[0, :, :]
+        rho_x[-1, :, :] = rho[-1, :, :]
+
+        rho_y[:, 1:-1, :] = 0.5 * (rho[:, :-1, :] + rho[:, 1:, :])
+        rho_y[:, 0, :] = rho[:, 0, :]
+        rho_y[:, -1, :] = rho[:, -1, :]
+
+        rho_z[:, :, 1:-1] = 0.5 * (rho[:, :, :-1] + rho[:, :, 1:])
+        rho_z[:, :, 0] = rho[:, :, 0]
+        rho_z[:, :, -1] = rho[:, :, -1]
+
+        return rho_x, rho_y, rho_z
+
+    def update_medium_fields(self):
+        """
+        Update derived density-dependent medium fields.
+
+        The reference-background relation is k₀ = η/ρ₀, but the active model
+        uses the local circulation field k(x,t) = η/ρ(x,t).
+        """
+
+        self.density = self.xp.array(
+            np.maximum(self.xp.numpy(self.density), self.density_floor)
+        )
+        self.local_circulation = self.viscosity / self.density
+        (
+            self.face_density_x,
+            self.face_density_y,
+            self.face_density_z,
+        ) = self._density_to_face_fields()
+        self.face_circulation_x = self.viscosity / self.face_density_x
+        self.face_circulation_y = self.viscosity / self.face_density_y
+        self.face_circulation_z = self.viscosity / self.face_density_z
     
     def update_vorticity(self):
         """
@@ -158,16 +230,18 @@ class PotentialGrid:
         Update the acceleration field using the vector Laplacian of velocity.
         
         According to the fundamental principle of the theory:
-        a = -η/ρ·Δv
+        a = -(η Δv)/ρ = -k(x,t)Δv
         """
+        self.update_medium_fields()
+
         # Calculate vector Laplacian
         lap_vx, lap_vy, lap_vz = vector_laplacian(self.vx, self.vy, self.vz, self.dx)
         
-        # Update acceleration field with sign reversal characteristic of the theory
-        factor = -self.viscosity / self.background_density
-        self.ax = factor * lap_vx
-        self.ay = factor * lap_vy
-        self.az = factor * lap_vz
+        # Build the Laplacian-equivalent density first, then divide by the
+        # collocated mass density at each face.
+        self.ax = -self.viscosity * lap_vx / self.face_density_x
+        self.ay = -self.viscosity * lap_vy / self.face_density_y
+        self.az = -self.viscosity * lap_vz / self.face_density_z
     
     def update_angular_acceleration(self):
         """
@@ -230,6 +304,8 @@ class PotentialGrid:
         self.update_derived_fields()
         
         # Run wave solvers
+        self.first_sound.update_density_field(self.density)
+        self.second_sound.update_density_field(self.density)
         self.first_sound.step()
         self.second_sound.step()
         
@@ -246,6 +322,9 @@ class PotentialGrid:
         
         # Update density from first sound
         self.density = self.background_density * (1 + self.first_sound.density_perturbation)
+        self.update_medium_fields()
+        self.first_sound.update_density_field(self.density)
+        self.second_sound.update_density_field(self.density)
         
         # Update temperature from second sound
         self.temperature = self.second_sound.temperature_perturbation

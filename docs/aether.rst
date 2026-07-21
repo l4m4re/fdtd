@@ -34,6 +34,27 @@ The aether path is intentionally opt-in:
   momentum, clock, source, power, and local energy diagnostics without using
   the Maxwell ``E/H`` detector contract.
 
+Legacy linear reference
+-----------------------
+
+The migrated :class:`fdtd.PotentialGrid` path preserves the older staggered
+linear/control-volume reference inside the active package. It is not the main
+native-angular development target; that role belongs to ``AetherGrid``. Its
+purpose is narrower: keep the clearest face/cell/edge layout for density,
+linear flux, acceleration, action flux, radiosity, and edge circulation
+available without depending on the root-level legacy ``simulator/`` package.
+
+``PotentialGrid`` now uses the local density-dependent closure
+``k(x,t)=eta/rho(x,t)``. Cell-centered density is interpolated to the velocity
+and acceleration faces before dividing the Laplacian-equivalent force density
+by local mass density. The companion first- and second-sound solvers also
+receive density updates from the grid; second-sound acceleration is scaled by
+face-collocated density so the field slots remain consistent.
+
+The root-level ``simulator/`` directory remains provenance for historical
+comparison and quaternionic experiments. New package-facing work should happen
+under ``extern/fdtd/``.
+
 Operator picture
 ----------------
 
